@@ -1,51 +1,81 @@
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from app.agent import create_agent
+from app.graph import build_graph
 
+
+# ============================================================
+# FastAPI
+# ============================================================
 
 app = FastAPI(
-    title="Agent-Based Scheduling System",
-    description=(
-        "Event-driven healthcare scheduling agent "
-        "using LlamaIndex and ReAct."
-    ),
+    title="Healthcare Agent Scheduling API",
     version="1.0.0",
 )
 
 
-class AgentRequest(BaseModel):
-    query: str = Field(
-        ...,
-        min_length=1,
-        description="Natural-language scheduling request.",
-    )
+# ============================================================
+# Graph
+# ============================================================
+
+graph = build_graph()
 
 
-class AgentResponse(BaseModel):
-    output: str
-    traces: list
-    evaluation: dict
+# ============================================================
+# Request Model
+# ============================================================
+
+class SchedulingRequest(BaseModel):
+    query: str
+    thread_id: str = "default"
 
 
-@app.post(
-    "/run",
-    response_model=AgentResponse,
-)
-async def run_agent(
-    request: AgentRequest,
+# ============================================================
+# Health Check
+# ============================================================
+
+@app.get("/")
+def root():
+
+    return {
+        "status": "ok",
+        "service": "Healthcare Agent Scheduling System",
+    }
+
+
+# ============================================================
+# Scheduling Endpoint
+# ============================================================
+
+@app.post("/schedule")
+async def schedule(
+    request: SchedulingRequest,
 ):
 
-    agent, tracer = create_agent(
-        "data/doctors.json"
-    )
+    config = {
+        "configurable": {
+            "thread_id": request.thread_id,
+        }
+    }
 
-    result = await agent.run(
-        request.query
+    result = graph.invoke(
+        {
+            "query": request.query,
+        },
+        config=config,
     )
 
     return {
-        "output": result["response"],
-        "traces": tracer.get_traces(),
-        "evaluation": result["evaluation"],
+        "response": result.get(
+            "response",
+            "",
+        ),
+        "status": result.get(
+            "status",
+            "",
+        ),
+        "trace": result.get(
+            "trace",
+            [],
+        ),
     }
