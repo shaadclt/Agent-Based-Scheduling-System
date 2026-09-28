@@ -1,21 +1,29 @@
 import os
-from llama_index.core import Settings
-from llama_index.llms.groq import Groq
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 from dotenv import load_dotenv
+from langchain_groq import ChatGroq
+
 
 load_dotenv()
 
-def setup_models():
-    llm = Groq(
+
+def setup_llm() -> ChatGroq:
+    """
+    Initialize and return the Groq chat model.
+    """
+
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        raise ValueError(
+            "GROQ_API_KEY is not configured. "
+            "Add it to your .env file."
+        )
+
+    llm = ChatGroq(
         model="openai/gpt-oss-120b",
-        api_key=os.getenv("GROQ_API_KEY"),
+        temperature=0,
+        api_key=api_key,
     )
 
-    embed_model = HuggingFaceEmbedding(
-        model_name="BAAI/bge-small-en-v1.5"
-    )
-
-    Settings.llm = llm
-    Settings.embed_model = embed_model
+    return llm
