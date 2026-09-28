@@ -49,15 +49,8 @@ def search_doctors(
     query: Optional[str] = None,
 ) -> str:
     """
-    Search the doctor database.
-
-    Use this tool when the patient needs to find a doctor
-    based on specialty or a general requirement.
-
-    Args:
-        specialty: Medical specialty such as Cardiologist,
-                   Dermatologist, Neurologist, etc.
-        query: Additional search text.
+    Search the doctor database by specialty, doctor name,
+    or general query.
     """
 
     doctors = _load_doctors()
@@ -65,54 +58,78 @@ def search_doctors(
     specialty_normalized = (
         specialty.lower().strip()
         if specialty
-        else None
+        else ""
     )
 
     query_normalized = (
         query.lower().strip()
         if query
-        else None
+        else ""
+    )
+
+    # Remove common punctuation
+    specialty_normalized = specialty_normalized.replace(
+        ",", ""
+    )
+
+    query_normalized = query_normalized.replace(
+        ",", ""
     )
 
     matches = []
 
     for doctor in doctors:
 
+        name = str(
+            doctor.get("name", "")
+        ).lower()
+
         doctor_specialty = str(
             doctor.get("specialty", "")
         ).lower()
 
-        doctor_name = str(
-            doctor.get("name", "")
-        ).lower()
-
-        doctor_description = str(
+        description = str(
             doctor.get("description", "")
         ).lower()
 
-        specialty_match = (
-            specialty_normalized
-            and specialty_normalized
-            in doctor_specialty
-        )
+        # --------------------------------------------------------
+        # Specialty matching
+        # --------------------------------------------------------
+
+        specialty_match = False
+
+        if specialty_normalized:
+
+            specialty_match = (
+                specialty_normalized in doctor_specialty
+                or doctor_specialty in specialty_normalized
+            )
+
+        # --------------------------------------------------------
+        # General query matching
+        # --------------------------------------------------------
 
         query_match = False
 
         if query_normalized:
 
             query_match = (
-                query_normalized in doctor_name
+                query_normalized in name
                 or query_normalized in doctor_specialty
-                or query_normalized in doctor_description
+                or query_normalized in description
             )
+
+        # --------------------------------------------------------
+        # Match
+        # --------------------------------------------------------
 
         if specialty_match or query_match:
 
             matches.append(doctor)
 
-    # If no specific filters were provided
-    if not specialty_normalized and not query_normalized:
-        matches = doctors
+    # ------------------------------------------------------------
+    # No results
+    # ------------------------------------------------------------
 
     if not matches:
 
@@ -120,6 +137,10 @@ def search_doctors(
             "No doctors were found matching the requested "
             "criteria."
         )
+
+    # ------------------------------------------------------------
+    # Format results
+    # ------------------------------------------------------------
 
     results = []
 
