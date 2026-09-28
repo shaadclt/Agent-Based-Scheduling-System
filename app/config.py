@@ -3,9 +3,13 @@ from llama_index.core import Settings
 from llama_index.llms.groq import Groq
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 def setup_models():
     llm = Groq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         api_key=os.getenv("GROQ_API_KEY"),
     )
 
