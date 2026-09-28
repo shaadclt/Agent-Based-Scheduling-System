@@ -1,52 +1,62 @@
 [
- {
-   "Name": "Dr. John Smith",
-   "Speciality": "Cardiologist",
-   "Years of Experience": 15
- },
- {
-   "Name": "Dr. Emily Johnson",
-   "Speciality": "Dermatologist",
-   "Years of Experience": 8
- },
- {
-   "Name": "Dr. Michael Brown",
-   "Speciality": "Neurologist",
-   "Years of Experience": 12
- },
- {
-   "Name": "Dr. Sarah Davis",
-   "Speciality": "Pediatrician",
-   "Years of Experience": 10
- },
- {
-   "Name": "Dr. Robert Wilson",
-   "Speciality": "Orthopedic Surgeon",
-   "Years of Experience": 20
- },
- {
-   "Name": "Dr. Jennifer Lee",
-   "Speciality": "Endocrinologist",
-   "Years of Experience": 9
- },
- {
-   "Name": "Dr. David Martinez",
-   "Speciality": "Oncologist",
-   "Years of Experience": 18
- },
- {
-   "Name": "Dr. Jessica Taylor",
-   "Speciality": "Psychiatrist",
-   "Years of Experience": 11
- },
- {
-   "Name": "Dr. William Anderson",
-   "Speciality": "Pulmonologist",
-   "Years of Experience": 13
- },
- {
-   "Name": "Dr. Karen Thomas",
-   "Speciality": "Gastroenterologist",
-   "Years of Experience": 7
- }
+  {
+    "name": "Dr. John Smith",
+    "specialty": "Cardiologist",
+    "experience": 15,
+    "description": "Specializes in cardiovascular disease, hypertension, and preventive cardiology."
+  },
+  {
+    "name": "Dr. Emily Johnson",
+    "specialty": "Dermatologist",
+    "experience": 8,
+    "description": "Specializes in skin conditions, acne, eczema, and cosmetic dermatology."
+  },
+  {
+    "name": "Dr. Michael Brown",
+    "specialty": "Neurologist",
+    "experience": 12,
+    "description": "Specializes in neurological disorders, headaches, epilepsy, and stroke management."
+  },
+  {
+    "name": "Dr. Sarah Davis",
+    "specialty": "Pediatrician",
+    "experience": 10,
+    "description": "Specializes in children's health, vaccinations, growth, and common pediatric conditions."
+  },
+  {
+    "name": "Dr. Robert Wilson",
+    "specialty": "Orthopedic Surgeon",
+    "experience": 20,
+    "description": "Specializes in bone, joint, muscle, sports injuries, and orthopedic surgery."
+  },
+  {
+    "name": "Dr. Jennifer Lee",
+    "specialty": "Endocrinologist",
+    "experience": 9,
+    "description": "Specializes in diabetes, thyroid disorders, hormonal conditions, and metabolic diseases."
+  },
+  {
+    "name": "Dr. David Martinez",
+    "specialty": "Oncologist",
+    "experience": 18,
+    "description": "Specializes in cancer diagnosis, treatment planning, and oncology care."
+  },
+  {
+    "name": "Dr. Jessica Taylor",
+    "specialty": "Psychiatrist",
+    "experience": 11,
+    "description": "Specializes in mental health conditions, anxiety, depression, and psychiatric care."
+  },
+  {
+    "name": "Dr. William Anderson",
+    "specialty": "Pulmonologist",
+    "experience": 13,
+    "description": "Specializes in respiratory diseases, asthma, COPD, and pulmonary conditions."
+  },
+  {
+    "name": "Dr. Karen Thomas",
+    "specialty": "Gastroenterologist",
+    "experience": 7,
+    "description": "Specializes in digestive disorders, acid reflux, liver disease, and gastrointestinal conditions."
+  }
 ]
