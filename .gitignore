@@ -67,3 +67,4 @@ dist/
 # =========================
 .cache/
 .pytest_cache/
+data/healthcare.db
