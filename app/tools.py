@@ -1,79 +1,154 @@
-import csv
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
+import pandas as pd
 
 from llama_index.core import VectorStoreIndex
-from llama_index.core.tools import FunctionTool, QueryEngineTool
+from llama_index.core.tools import FunctionTool
 from llama_index.readers.json import JSONReader
 
 
-def build_doctor_index(json_path: str) -> VectorStoreIndex:
-    """Build a vector index from the doctor directory."""
+# ============================================================
+# Doctor Index
+# ============================================================
 
-    documents = JSONReader().load_data(json_path)
+def build_doctor_index(data_path: str) -> VectorStoreIndex:
+    """
+    Load doctor information from JSON and build a vector index.
+    """
 
-    return VectorStoreIndex.from_documents(documents)
+    documents = JSONReader().load_data(
+        Path(data_path)
+    )
+
+    index = VectorStoreIndex.from_documents(
+        documents
+    )
+
+    return index
 
 
-def schedule_appointment_tool(
+# ============================================================
+# Doctor Search
+# ============================================================
+
+def search_doctors(
+    query: str,
+    index: VectorStoreIndex,
+) -> str:
+    """
+    Search the doctor database using the vector index.
+    """
+
+    query_engine = index.as_query_engine(
+        similarity_top_k=5
+    )
+
+    response = query_engine.query(query)
+
+    return str(response)
+
+
+# ============================================================
+# Appointment Scheduling
+# ============================================================
+
+def schedule_appointment(
     patient_name: str,
     doctor_name: str,
-    preferred_time: str,
-    csv_path: str = "data/doctor_appointment_requests.csv",
+    appointment_time: str,
 ) -> str:
     """
     Record an appointment request.
 
-    Note:
-    This phase records the request only. It does not yet validate
-    doctor availability or create a confirmed appointment.
+    NOTE:
+    This currently records the request rather than performing
+    real availability checking. Phase 2 will replace this with
+    proper availability and booking logic.
     """
 
-    path = Path(csv_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    output_file = Path(
+        "data/doctor_appointment_requests.csv"
+    )
 
-    with path.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+    output_file.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
-        writer.writerow(
-            [
-                datetime.utcnow().isoformat(),
-                patient_name,
-                doctor_name,
-                preferred_time,
-            ]
+    appointment = {
+        "timestamp": datetime.now().isoformat(),
+        "patient_name": patient_name,
+        "doctor_name": doctor_name,
+        "appointment_time": appointment_time,
+    }
+
+    df = pd.DataFrame([appointment])
+
+    if output_file.exists():
+
+        df.to_csv(
+            output_file,
+            mode="a",
+            header=False,
+            index=False,
+        )
+
+    else:
+
+        df.to_csv(
+            output_file,
+            index=False,
         )
 
     return (
-        f"Appointment request recorded for {patient_name} "
-        f"with {doctor_name} ({preferred_time})."
+        f"Appointment request recorded for "
+        f"{patient_name} with {doctor_name} "
+        f"at {appointment_time}."
     )
 
 
-def build_scheduling_tools(index: VectorStoreIndex):
-    """Create the LlamaIndex tools used by the scheduling agent."""
+# ============================================================
+# LlamaIndex Tools
+# ============================================================
 
-    doctor_query_engine = index.as_query_engine()
+def create_search_doctors_tool(
+    index: VectorStoreIndex,
+) -> FunctionTool:
+    """
+    Create a LlamaIndex tool for doctor search.
+    """
 
-    doctor_tool = QueryEngineTool.from_defaults(
-        query_engine=doctor_query_engine,
+    def search(query: str) -> str:
+        return search_doctors(
+            query=query,
+            index=index,
+        )
+
+    return FunctionTool.from_defaults(
+        fn=search,
         name="search_doctors",
         description=(
-            "Search the doctor directory for doctors by specialty, "
-            "name, experience, or related information."
+            "Search the doctor database for doctors matching "
+            "a specialty, condition, or other requirement. "
+            "Use this tool when the patient needs help finding "
+            "a suitable doctor."
         ),
     )
 
-    appointment_tool = FunctionTool.from_defaults(
-        fn=schedule_appointment_tool,
+
+def create_schedule_appointment_tool() -> FunctionTool:
+    """
+    Create a LlamaIndex tool for appointment scheduling.
+    """
+
+    return FunctionTool.from_defaults(
+        fn=schedule_appointment,
         name="schedule_appointment",
         description=(
             "Record an appointment request. "
-            "Requires patient_name, doctor_name, and preferred_time."
+            "Requires patient_name, doctor_name, and "
+            "appointment_time."
         ),
     )
-
-    return [
-        doctor_tool,
-        appointment_tool,
-    ]
