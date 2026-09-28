@@ -172,23 +172,34 @@ def check_availability(
 ) -> str:
     """
     Check available appointment slots for a doctor.
-
-    Args:
-        doctor_name: Name of the doctor.
-        appointment_date: Requested date in YYYY-MM-DD format.
-
-    Returns:
-        Available appointment slots.
     """
 
     doctors = _load_doctors()
+
+    requested_name = (
+        doctor_name
+        .lower()
+        .strip()
+        .replace("dr.", "")
+        .strip()
+    )
 
     doctor = None
 
     for item in doctors:
 
-        if item.get("name", "").lower() == (
-            doctor_name.lower().strip()
+        database_name = (
+            item.get("name", "")
+            .lower()
+            .strip()
+            .replace("dr.", "")
+            .strip()
+        )
+
+        if (
+            database_name == requested_name
+            or requested_name in database_name
+            or database_name in requested_name
         ):
             doctor = item
             break
@@ -198,6 +209,23 @@ def check_availability(
         return (
             f"Doctor '{doctor_name}' was not found."
         )
+
+    available_slots = [
+        "09:00",
+        "10:30",
+        "14:00",
+        "15:30",
+        "17:00",
+    ]
+
+    return json.dumps(
+        {
+            "doctor": doctor.get("name"),
+            "date": appointment_date,
+            "available_slots": available_slots,
+        },
+        indent=2,
+    )
 
     # --------------------------------------------------------
     # Phase 1 simulated availability
