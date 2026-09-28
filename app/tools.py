@@ -2,153 +2,337 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
+import json
 
-from llama_index.core import VectorStoreIndex
-from llama_index.core.tools import FunctionTool
-from llama_index.readers.json import JSONReader
+from langchain_core.tools import tool
 
 
 # ============================================================
-# Doctor Index
+# Configuration
 # ============================================================
 
-def build_doctor_index(data_path: str) -> VectorStoreIndex:
+DOCTORS_FILE = Path("data/doctors.json")
+APPOINTMENTS_FILE = Path(
+    "data/doctor_appointment_requests.csv"
+)
+
+
+# ============================================================
+# Internal helpers
+# ============================================================
+
+def _load_doctors() -> list[dict]:
     """
-    Load doctor information from JSON and build a vector index.
+    Load doctor information from the JSON dataset.
     """
 
-    documents = JSONReader().load_data(
-        Path(data_path)
-    )
+    if not DOCTORS_FILE.exists():
+        raise FileNotFoundError(
+            f"Doctor database not found: {DOCTORS_FILE}"
+        )
 
-    index = VectorStoreIndex.from_documents(
-        documents
-    )
-
-    return index
+    with open(
+        DOCTORS_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        return json.load(file)
 
 
 # ============================================================
-# Doctor Search
+# Doctor Search Tool
 # ============================================================
 
+@tool
 def search_doctors(
-    query: str,
-    index: VectorStoreIndex,
+    specialty: Optional[str] = None,
+    query: Optional[str] = None,
 ) -> str:
     """
-    Search the doctor database using the vector index.
+    Search the doctor database.
+
+    Use this tool when the patient needs to find a doctor
+    based on specialty or a general requirement.
+
+    Args:
+        specialty: Medical specialty such as Cardiologist,
+                   Dermatologist, Neurologist, etc.
+        query: Additional search text.
     """
 
-    query_engine = index.as_query_engine(
-        similarity_top_k=5
+    doctors = _load_doctors()
+
+    specialty_normalized = (
+        specialty.lower().strip()
+        if specialty
+        else None
     )
 
-    response = query_engine.query(query)
+    query_normalized = (
+        query.lower().strip()
+        if query
+        else None
+    )
 
-    return str(response)
+    matches = []
+
+    for doctor in doctors:
+
+        doctor_specialty = str(
+            doctor.get("specialty", "")
+        ).lower()
+
+        doctor_name = str(
+            doctor.get("name", "")
+        ).lower()
+
+        doctor_description = str(
+            doctor.get("description", "")
+        ).lower()
+
+        specialty_match = (
+            specialty_normalized
+            and specialty_normalized
+            in doctor_specialty
+        )
+
+        query_match = False
+
+        if query_normalized:
+
+            query_match = (
+                query_normalized in doctor_name
+                or query_normalized in doctor_specialty
+                or query_normalized in doctor_description
+            )
+
+        if specialty_match or query_match:
+
+            matches.append(doctor)
+
+    # If no specific filters were provided
+    if not specialty_normalized and not query_normalized:
+        matches = doctors
+
+    if not matches:
+
+        return (
+            "No doctors were found matching the requested "
+            "criteria."
+        )
+
+    results = []
+
+    for doctor in matches:
+
+        results.append(
+            {
+                "name": doctor.get("name"),
+                "specialty": doctor.get("specialty"),
+                "experience": doctor.get("experience"),
+                "description": doctor.get("description"),
+            }
+        )
+
+    return json.dumps(
+        results,
+        indent=2,
+    )
 
 
 # ============================================================
-# Appointment Scheduling
+# Availability Tool
 # ============================================================
 
-def schedule_appointment(
+@tool
+def check_availability(
+    doctor_name: str,
+    appointment_date: str,
+) -> str:
+    """
+    Check available appointment slots for a doctor.
+
+    Args:
+        doctor_name: Name of the doctor.
+        appointment_date: Requested date in YYYY-MM-DD format.
+
+    Returns:
+        Available appointment slots.
+    """
+
+    doctors = _load_doctors()
+
+    doctor = None
+
+    for item in doctors:
+
+        if item.get("name", "").lower() == (
+            doctor_name.lower().strip()
+        ):
+            doctor = item
+            break
+
+    if doctor is None:
+
+        return (
+            f"Doctor '{doctor_name}' was not found."
+        )
+
+    # --------------------------------------------------------
+    # Phase 1 simulated availability
+    # --------------------------------------------------------
+    #
+    # We intentionally use deterministic sample slots for
+    # Phase 1. In Phase 2 this will be replaced with real
+    # schedule data from a database.
+    #
+
+    available_slots = [
+        "09:00",
+        "10:30",
+        "14:00",
+        "15:30",
+        "17:00",
+    ]
+
+    return json.dumps(
+        {
+            "doctor": doctor.get("name"),
+            "date": appointment_date,
+            "available_slots": available_slots,
+        },
+        indent=2,
+    )
+
+
+# ============================================================
+# Appointment Booking Tool
+# ============================================================
+
+@tool
+def book_appointment(
     patient_name: str,
     doctor_name: str,
+    appointment_date: str,
     appointment_time: str,
 ) -> str:
     """
-    Record an appointment request.
+    Book an appointment for a patient.
 
-    NOTE:
-    This currently records the request rather than performing
-    real availability checking. Phase 2 will replace this with
-    proper availability and booking logic.
+    Args:
+        patient_name: Patient's name.
+        doctor_name: Doctor's name.
+        appointment_date: Appointment date in YYYY-MM-DD format.
+        appointment_time: Appointment time in HH:MM format.
+
+    Returns:
+        Booking confirmation.
     """
 
-    output_file = Path(
-        "data/doctor_appointment_requests.csv"
-    )
+    # --------------------------------------------------------
+    # Validate doctor
+    # --------------------------------------------------------
 
-    output_file.parent.mkdir(
+    doctors = _load_doctors()
+
+    doctor = None
+
+    for item in doctors:
+
+        if item.get("name", "").lower() == (
+            doctor_name.lower().strip()
+        ):
+            doctor = item
+            break
+
+    if doctor is None:
+
+        return (
+            f"Booking failed. Doctor '{doctor_name}' "
+            f"was not found."
+        )
+
+    # --------------------------------------------------------
+    # Validate slot
+    # --------------------------------------------------------
+
+    valid_slots = [
+        "09:00",
+        "10:30",
+        "14:00",
+        "15:30",
+        "17:00",
+    ]
+
+    if appointment_time not in valid_slots:
+
+        return (
+            f"Booking failed. {appointment_time} is not "
+            f"a valid available slot."
+        )
+
+    # --------------------------------------------------------
+    # Save appointment request
+    # --------------------------------------------------------
+
+    APPOINTMENTS_FILE.parent.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
     appointment = {
         "timestamp": datetime.now().isoformat(),
         "patient_name": patient_name,
         "doctor_name": doctor_name,
+        "appointment_date": appointment_date,
         "appointment_time": appointment_time,
     }
 
-    df = pd.DataFrame([appointment])
+    file_exists = APPOINTMENTS_FILE.exists()
 
-    if output_file.exists():
+    import csv
 
-        df.to_csv(
-            output_file,
-            mode="a",
-            header=False,
-            index=False,
+    with open(
+        APPOINTMENTS_FILE,
+        "a",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+
+        writer = csv.DictWriter(
+            file,
+            fieldnames=appointment.keys(),
         )
 
-    else:
+        if not file_exists:
+            writer.writeheader()
 
-        df.to_csv(
-            output_file,
-            index=False,
-        )
+        writer.writerow(appointment)
+
+    # --------------------------------------------------------
+    # Generate confirmation
+    # --------------------------------------------------------
 
     return (
-        f"Appointment request recorded for "
-        f"{patient_name} with {doctor_name} "
-        f"at {appointment_time}."
+        "Appointment successfully booked.\n"
+        f"Patient: {patient_name}\n"
+        f"Doctor: {doctor_name}\n"
+        f"Date: {appointment_date}\n"
+        f"Time: {appointment_time}"
     )
 
 
 # ============================================================
-# LlamaIndex Tools
+# Tool Registry
 # ============================================================
 
-def create_search_doctors_tool(
-    index: VectorStoreIndex,
-) -> FunctionTool:
+def get_tools():
     """
-    Create a LlamaIndex tool for doctor search.
+    Return all tools used by the scheduling agent.
     """
 
-    def search(query: str) -> str:
-        return search_doctors(
-            query=query,
-            index=index,
-        )
-
-    return FunctionTool.from_defaults(
-        fn=search,
-        name="search_doctors",
-        description=(
-            "Search the doctor database for doctors matching "
-            "a specialty, condition, or other requirement. "
-            "Use this tool when the patient needs help finding "
-            "a suitable doctor."
-        ),
-    )
-
-
-def create_schedule_appointment_tool() -> FunctionTool:
-    """
-    Create a LlamaIndex tool for appointment scheduling.
-    """
-
-    return FunctionTool.from_defaults(
-        fn=schedule_appointment,
-        name="schedule_appointment",
-        description=(
-            "Record an appointment request. "
-            "Requires patient_name, doctor_name, and "
-            "appointment_time."
-        ),
-    )
+    return [
+        search_doctors,
+        check_availability,
+        book_appointment,
+    ]
