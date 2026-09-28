@@ -1,29 +1,25 @@
-from datetime import datetime
+import json
 from pathlib import Path
 from typing import Optional
-
-import json
 
 from langchain_core.tools import tool
 
 
 # ============================================================
-# Configuration
+# File Paths
 # ============================================================
 
 DOCTORS_FILE = Path("data/doctors.json")
-APPOINTMENTS_FILE = Path(
-    "data/doctor_appointment_requests.csv"
-)
+APPOINTMENTS_FILE = Path("data/doctor_appointment_requests.csv")
 
 
 # ============================================================
-# Internal helpers
+# Helper Functions
 # ============================================================
 
-def _load_doctors() -> list[dict]:
+def _load_doctors() -> list:
     """
-    Load doctor information from the JSON dataset.
+    Load doctor records from the JSON database.
     """
 
     if not DOCTORS_FILE.exists():
@@ -31,12 +27,68 @@ def _load_doctors() -> list[dict]:
             f"Doctor database not found: {DOCTORS_FILE}"
         )
 
-    with open(
-        DOCTORS_FILE,
-        "r",
-        encoding="utf-8",
-    ) as file:
+    with open(DOCTORS_FILE, "r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def _normalize_name(name: str) -> str:
+    """
+    Normalize doctor names for flexible matching.
+
+    Examples:
+        "Dr. Michael Brown" -> "michael brown"
+        "Michael Brown"     -> "michael brown"
+        "DR MICHAEL BROWN"  -> "michael brown"
+    """
+
+    if not name:
+        return ""
+
+    normalized = name.lower().strip()
+
+    # Remove common doctor prefixes
+    normalized = normalized.replace("dr.", " ")
+    normalized = normalized.replace("dr ", " ")
+
+    # Normalize whitespace
+    normalized = " ".join(normalized.split())
+
+    return normalized
+
+
+def _find_doctor(doctor_name: str) -> Optional[dict]:
+    """
+    Find a doctor using flexible name matching.
+    """
+
+    doctors = _load_doctors()
+
+    requested_name = _normalize_name(doctor_name)
+
+    if not requested_name:
+        return None
+
+    for doctor in doctors:
+
+        database_name = _normalize_name(
+            doctor.get("name", "")
+        )
+
+        if not database_name:
+            continue
+
+        # Exact match
+        if database_name == requested_name:
+            return doctor
+
+        # Partial match
+        if requested_name in database_name:
+            return doctor
+
+        if database_name in requested_name:
+            return doctor
+
+    return None
 
 
 # ============================================================
@@ -49,8 +101,16 @@ def search_doctors(
     query: Optional[str] = None,
 ) -> str:
     """
-    Search the doctor database by specialty, doctor name,
-    or general query.
+    Search the doctor database by medical specialty,
+    doctor name, or general search query.
+
+    Args:
+        specialty: Medical specialty such as Neurologist,
+                   Cardiologist, Dermatologist, etc.
+        query: Doctor name or general search text.
+
+    Returns:
+        JSON string containing matching doctors.
     """
 
     doctors = _load_doctors()
@@ -67,13 +127,17 @@ def search_doctors(
         else ""
     )
 
-    # Remove common punctuation
-    specialty_normalized = specialty_normalized.replace(
-        ",", ""
+    # Normalize punctuation
+    specialty_normalized = (
+        specialty_normalized
+        .replace(",", "")
+        .replace(".", "")
     )
 
-    query_normalized = query_normalized.replace(
-        ",", ""
+    query_normalized = (
+        query_normalized
+        .replace(",", "")
+        .replace(".", "")
     )
 
     matches = []
@@ -92,9 +156,12 @@ def search_doctors(
             doctor.get("description", "")
         ).lower()
 
-        # --------------------------------------------------------
+        # Remove "dr." for matching
+        normalized_name = _normalize_name(name)
+
+        # ----------------------------------------------------
         # Specialty matching
-        # --------------------------------------------------------
+        # ----------------------------------------------------
 
         specialty_match = False
 
@@ -105,58 +172,84 @@ def search_doctors(
                 or doctor_specialty in specialty_normalized
             )
 
-        # --------------------------------------------------------
-        # General query matching
-        # --------------------------------------------------------
+        # ----------------------------------------------------
+        # Query matching
+        # ----------------------------------------------------
 
         query_match = False
 
         if query_normalized:
 
             query_match = (
-                query_normalized in name
+                query_normalized in normalized_name
                 or query_normalized in doctor_specialty
                 or query_normalized in description
             )
 
-        # --------------------------------------------------------
-        # Match
-        # --------------------------------------------------------
+        # ----------------------------------------------------
+        # Token-based matching
+        # ----------------------------------------------------
 
-        if specialty_match or query_match:
+        token_match = False
 
-            matches.append(doctor)
+        if query_normalized:
 
-    # ------------------------------------------------------------
+            query_tokens = query_normalized.split()
+
+            searchable_text = " ".join(
+                [
+                    normalized_name,
+                    doctor_specialty,
+                    description,
+                ]
+            )
+
+            # Match when all meaningful query tokens exist
+            # somewhere in the doctor's searchable information.
+            if query_tokens:
+                token_match = all(
+                    token in searchable_text
+                    for token in query_tokens
+                    if len(token) > 2
+                )
+
+        if specialty_match or query_match or token_match:
+            matches.append(
+                {
+                    "name": doctor.get("name"),
+                    "specialty": doctor.get("specialty"),
+                    "experience": doctor.get("experience"),
+                    "description": doctor.get("description"),
+                }
+            )
+
+    # --------------------------------------------------------
     # No results
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
     if not matches:
-
-        return (
-            "No doctors were found matching the requested "
-            "criteria."
-        )
-
-    # ------------------------------------------------------------
-    # Format results
-    # ------------------------------------------------------------
-
-    results = []
-
-    for doctor in matches:
-
-        results.append(
+        return json.dumps(
             {
-                "name": doctor.get("name"),
-                "specialty": doctor.get("specialty"),
-                "experience": doctor.get("experience"),
-                "description": doctor.get("description"),
-            }
+                "status": "no_results",
+                "message": (
+                    "No doctors were found matching "
+                    "the requested criteria."
+                ),
+                "doctors": [],
+            },
+            indent=2,
         )
+
+    # --------------------------------------------------------
+    # Results
+    # --------------------------------------------------------
 
     return json.dumps(
-        results,
+        {
+            "status": "success",
+            "count": len(matches),
+            "doctors": matches,
+        },
         indent=2,
     )
 
@@ -171,70 +264,42 @@ def check_availability(
     appointment_date: str,
 ) -> str:
     """
-    Check available appointment slots for a doctor.
+    Check available appointment slots for a doctor
+    on a specific date.
+
+    Args:
+        doctor_name: Name of the doctor.
+        appointment_date: Appointment date in YYYY-MM-DD format.
+
+    Returns:
+        JSON string containing available appointment slots.
     """
 
-    doctors = _load_doctors()
+    doctor = _find_doctor(doctor_name)
 
-    requested_name = (
-        doctor_name
-        .lower()
-        .strip()
-        .replace("dr.", "")
-        .strip()
-    )
-
-    doctor = None
-
-    for item in doctors:
-
-        database_name = (
-            item.get("name", "")
-            .lower()
-            .strip()
-            .replace("dr.", "")
-            .strip()
-        )
-
-        if (
-            database_name == requested_name
-            or requested_name in database_name
-            or database_name in requested_name
-        ):
-            doctor = item
-            break
+    # --------------------------------------------------------
+    # Doctor not found
+    # --------------------------------------------------------
 
     if doctor is None:
 
-        return (
-            f"Doctor '{doctor_name}' was not found."
+        return json.dumps(
+            {
+                "status": "error",
+                "message": (
+                    f"Doctor '{doctor_name}' was not found."
+                ),
+                "available_slots": [],
+            },
+            indent=2,
         )
 
-    available_slots = [
-        "09:00",
-        "10:30",
-        "14:00",
-        "15:30",
-        "17:00",
-    ]
-
-    return json.dumps(
-        {
-            "doctor": doctor.get("name"),
-            "date": appointment_date,
-            "available_slots": available_slots,
-        },
-        indent=2,
-    )
-
     # --------------------------------------------------------
-    # Phase 1 simulated availability
+    # Current Phase 1 availability
     # --------------------------------------------------------
-    #
-    # We intentionally use deterministic sample slots for
-    # Phase 1. In Phase 2 this will be replaced with real
-    # schedule data from a database.
-    #
+    # These are deterministic sample slots.
+    # Phase 2 can replace this with database-backed
+    # doctor schedules and existing appointment checks.
 
     available_slots = [
         "09:00",
@@ -246,7 +311,9 @@ def check_availability(
 
     return json.dumps(
         {
+            "status": "success",
             "doctor": doctor.get("name"),
+            "specialty": doctor.get("specialty"),
             "date": appointment_date,
             "available_slots": available_slots,
         },
@@ -255,54 +322,83 @@ def check_availability(
 
 
 # ============================================================
-# Appointment Booking Tool
+# Booking Tool
 # ============================================================
 
 @tool
 def book_appointment(
-    patient_name: str,
     doctor_name: str,
+    patient_name: str,
     appointment_date: str,
     appointment_time: str,
 ) -> str:
     """
-    Book an appointment for a patient.
+    Book an appointment with a doctor.
 
     Args:
+        doctor_name: Name of the doctor.
         patient_name: Patient's name.
-        doctor_name: Doctor's name.
         appointment_date: Appointment date in YYYY-MM-DD format.
         appointment_time: Appointment time in HH:MM format.
 
     Returns:
-        Booking confirmation.
+        JSON string containing booking confirmation.
     """
 
     # --------------------------------------------------------
     # Validate doctor
     # --------------------------------------------------------
 
-    doctors = _load_doctors()
-
-    doctor = None
-
-    for item in doctors:
-
-        if item.get("name", "").lower() == (
-            doctor_name.lower().strip()
-        ):
-            doctor = item
-            break
+    doctor = _find_doctor(doctor_name)
 
     if doctor is None:
 
-        return (
-            f"Booking failed. Doctor '{doctor_name}' "
-            f"was not found."
+        return json.dumps(
+            {
+                "status": "error",
+                "message": (
+                    f"Doctor '{doctor_name}' was not found."
+                ),
+            },
+            indent=2,
         )
 
     # --------------------------------------------------------
-    # Validate slot
+    # Validate required fields
+    # --------------------------------------------------------
+
+    if not patient_name.strip():
+
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "Patient name is required.",
+            },
+            indent=2,
+        )
+
+    if not appointment_date.strip():
+
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "Appointment date is required.",
+            },
+            indent=2,
+        )
+
+    if not appointment_time.strip():
+
+        return json.dumps(
+            {
+                "status": "error",
+                "message": "Appointment time is required.",
+            },
+            indent=2,
+        )
+
+    # --------------------------------------------------------
+    # Validate appointment slot
     # --------------------------------------------------------
 
     valid_slots = [
@@ -315,13 +411,20 @@ def book_appointment(
 
     if appointment_time not in valid_slots:
 
-        return (
-            f"Booking failed. {appointment_time} is not "
-            f"a valid available slot."
+        return json.dumps(
+            {
+                "status": "error",
+                "message": (
+                    f"'{appointment_time}' is not a valid "
+                    "appointment slot."
+                ),
+                "available_slots": valid_slots,
+            },
+            indent=2,
         )
 
     # --------------------------------------------------------
-    # Save appointment request
+    # Create data directory if necessary
     # --------------------------------------------------------
 
     APPOINTMENTS_FILE.parent.mkdir(
@@ -329,45 +432,54 @@ def book_appointment(
         exist_ok=True,
     )
 
-    appointment = {
-        "timestamp": datetime.now().isoformat(),
-        "patient_name": patient_name,
-        "doctor_name": doctor_name,
-        "appointment_date": appointment_date,
-        "appointment_time": appointment_time,
-    }
+    # --------------------------------------------------------
+    # Create CSV file with header if it doesn't exist
+    # --------------------------------------------------------
 
     file_exists = APPOINTMENTS_FILE.exists()
-
-    import csv
 
     with open(
         APPOINTMENTS_FILE,
         "a",
-        newline="",
         encoding="utf-8",
+        newline="",
     ) as file:
 
-        writer = csv.DictWriter(
-            file,
-            fieldnames=appointment.keys(),
+        if not file_exists:
+
+            file.write(
+                "patient_name,"
+                "doctor_name,"
+                "specialty,"
+                "appointment_date,"
+                "appointment_time\n"
+            )
+
+        file.write(
+            f'"{patient_name}",'
+            f'"{doctor.get("name")}",'
+            f'"{doctor.get("specialty")}",'
+            f'"{appointment_date}",'
+            f'"{appointment_time}"\n'
         )
 
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(appointment)
-
     # --------------------------------------------------------
-    # Generate confirmation
+    # Return confirmation
     # --------------------------------------------------------
 
-    return (
-        "Appointment successfully booked.\n"
-        f"Patient: {patient_name}\n"
-        f"Doctor: {doctor_name}\n"
-        f"Date: {appointment_date}\n"
-        f"Time: {appointment_time}"
+    return json.dumps(
+        {
+            "status": "success",
+            "message": "Appointment booked successfully.",
+            "appointment": {
+                "patient_name": patient_name,
+                "doctor_name": doctor.get("name"),
+                "specialty": doctor.get("specialty"),
+                "date": appointment_date,
+                "time": appointment_time,
+            },
+        },
+        indent=2,
     )
 
 
@@ -377,7 +489,7 @@ def book_appointment(
 
 def get_tools():
     """
-    Return all tools used by the scheduling agent.
+    Return all tools available to the scheduling agent.
     """
 
     return [
