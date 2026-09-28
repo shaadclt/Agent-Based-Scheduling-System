@@ -27,11 +27,11 @@ from app.traces import AgentTraceLogger
 
 
 class PrepEvent(Event):
-    """Prepared conversation input for the agent."""
+    """Signals that the workflow should continue reasoning."""
 
 
 class ToolCallEvent(Event):
-    """Represents a tool call selected by the agent."""
+    """Represents a tool selected by the agent."""
 
     tool_call: ToolSelection
 
@@ -65,10 +65,6 @@ class SchedulingWorkflow(Workflow):
             verbose=verbose,
         )
 
-        # --------------------------------------------------------
-        # Core components
-        # --------------------------------------------------------
-
         self.memory = memory
         self.index = index
         self.tracer = tracer
@@ -76,16 +72,11 @@ class SchedulingWorkflow(Workflow):
         self.llm = llm
         self.tools = tools or []
 
-        # --------------------------------------------------------
-        # ReAct components
-        # --------------------------------------------------------
-
         self.formatter = ReActChatFormatter()
         self.output_parser = ReActOutputParser()
 
     # ============================================================
-    # STEP 1
-    # Prepare user request
+    # STEP 1 — Prepare
     # ============================================================
 
     @step
@@ -102,19 +93,13 @@ class SchedulingWorkflow(Workflow):
                 "A query is required."
             )
 
-        # --------------------------------------------------------
         # Store user message
-        # --------------------------------------------------------
-
         self.memory.add(
             "user",
             query,
         )
 
-        # --------------------------------------------------------
         # Trace request
-        # --------------------------------------------------------
-
         self.tracer.log(
             "user_request",
             {
@@ -122,41 +107,28 @@ class SchedulingWorkflow(Workflow):
             },
         )
 
-        # --------------------------------------------------------
-        # Build conversation
-        # --------------------------------------------------------
-
+        # System instruction
         messages = [
             ChatMessage(
                 role="system",
                 content=(
                     "You are an AI healthcare scheduling assistant.\n\n"
 
-                    "Your job is to help users find doctors and "
-                    "schedule appointments.\n\n"
-
-                    "Follow these rules:\n"
-                    "1. Understand the user's healthcare scheduling "
-                    "request.\n"
-                    "2. Use the doctor search tool when you need to "
-                    "find a suitable doctor.\n"
-                    "3. Use the scheduling tool when the user has "
-                    "provided the information required to schedule "
-                    "an appointment.\n"
-                    "4. Do not invent doctors or appointment details.\n"
-                    "5. Do not claim that an appointment is confirmed "
-                    "unless the scheduling tool provides confirmation.\n"
-                    "6. If required information is missing, ask the "
-                    "user for it.\n"
-                    "7. Keep the final response clear and concise.\n"
+                    "Your responsibilities are:\n"
+                    "1. Understand healthcare scheduling requests.\n"
+                    "2. Search for suitable doctors when necessary.\n"
+                    "3. Schedule appointments when the required "
+                    "information is available.\n"
+                    "4. Never invent doctors or appointment details.\n"
+                    "5. Never claim an appointment is confirmed "
+                    "unless the scheduling tool confirms it.\n"
+                    "6. Ask the user for missing information.\n"
+                    "7. Keep responses clear and concise.\n"
                 ),
             )
         ]
 
-        # --------------------------------------------------------
         # Add conversation history
-        # --------------------------------------------------------
-
         for message in self.memory.get():
 
             role = message.get("role")
@@ -180,19 +152,13 @@ class SchedulingWorkflow(Workflow):
                     )
                 )
 
-        # --------------------------------------------------------
         # Store messages in workflow context
-        # --------------------------------------------------------
-
         await ctx.set(
             "messages",
             messages,
         )
 
-        # --------------------------------------------------------
         # Initialize reasoning history
-        # --------------------------------------------------------
-
         await ctx.set(
             "reasoning_steps",
             [],
@@ -201,8 +167,7 @@ class SchedulingWorkflow(Workflow):
         return PrepEvent()
 
     # ============================================================
-    # STEP 2
-    # Agent reasoning
+    # STEP 2 — Reason
     # ============================================================
 
     @step
@@ -210,7 +175,7 @@ class SchedulingWorkflow(Workflow):
         self,
         ctx: Context,
         ev: PrepEvent,
-    ):
+    ) -> ToolCallEvent | StopEvent:
 
         if self.llm is None:
 
@@ -219,48 +184,33 @@ class SchedulingWorkflow(Workflow):
                 "SchedulingWorkflow."
             )
 
-        # --------------------------------------------------------
         # Retrieve conversation
-        # --------------------------------------------------------
-
         messages = await ctx.get(
             "messages",
             default=[],
         )
 
-        # --------------------------------------------------------
-        # Retrieve previous reasoning steps
-        # --------------------------------------------------------
-
+        # Retrieve reasoning history
         reasoning_steps = await ctx.get(
             "reasoning_steps",
             default=[],
         )
 
-        # --------------------------------------------------------
         # Format ReAct prompt
-        # --------------------------------------------------------
-
         formatted_messages = self.formatter.format(
             self.tools,
             messages,
             reasoning_steps,
         )
 
-        # --------------------------------------------------------
         # Call LLM
-        # --------------------------------------------------------
-
         response = await self.llm.achat(
             formatted_messages
         )
 
         response_text = response.message.content
 
-        # --------------------------------------------------------
         # Trace LLM response
-        # --------------------------------------------------------
-
         self.tracer.log(
             "llm_response",
             {
@@ -268,17 +218,14 @@ class SchedulingWorkflow(Workflow):
             },
         )
 
-        # --------------------------------------------------------
-        # Parse ReAct response
-        # --------------------------------------------------------
-
+        # Parse response
         reasoning_step = self.output_parser.parse(
             response_text
         )
 
-        # ========================================================
-        # FINAL RESPONSE
-        # ========================================================
+        # --------------------------------------------------------
+        # Final response
+        # --------------------------------------------------------
 
         if not isinstance(
             reasoning_step,
@@ -287,18 +234,10 @@ class SchedulingWorkflow(Workflow):
 
             final_response = response_text
 
-            # ----------------------------------------------------
-            # Store assistant response
-            # ----------------------------------------------------
-
             self.memory.add(
                 "assistant",
                 final_response,
             )
-
-            # ----------------------------------------------------
-            # Trace final response
-            # ----------------------------------------------------
 
             self.tracer.log(
                 "final_response",
@@ -307,20 +246,6 @@ class SchedulingWorkflow(Workflow):
                 },
             )
 
-            # ----------------------------------------------------
-            # Evaluation
-            # ----------------------------------------------------
-
-            if self.evaluator is not None:
-
-                try:
-
-                    self.evaluator.total_tasks += 1
-                    self.evaluator.successful_tasks += 1
-
-                except Exception:
-                    pass
-
             return StopEvent(
                 result={
                     "response": final_response,
@@ -328,12 +253,8 @@ class SchedulingWorkflow(Workflow):
                 }
             )
 
-        # ========================================================
-        # TOOL CALL
-        # ========================================================
-
         # --------------------------------------------------------
-        # Store reasoning step
+        # Tool call
         # --------------------------------------------------------
 
         reasoning_steps.append(
@@ -345,19 +266,11 @@ class SchedulingWorkflow(Workflow):
             reasoning_steps,
         )
 
-        # --------------------------------------------------------
-        # Create tool selection
-        # --------------------------------------------------------
-
         tool_call = ToolSelection(
             tool_id=reasoning_step.action,
             tool_name=reasoning_step.action,
             tool_kwargs=reasoning_step.action_input,
         )
-
-        # --------------------------------------------------------
-        # Trace tool selection
-        # --------------------------------------------------------
 
         self.tracer.log(
             "tool_call",
@@ -372,8 +285,7 @@ class SchedulingWorkflow(Workflow):
         )
 
     # ============================================================
-    # STEP 3
-    # Execute selected tool
+    # STEP 3 — Execute Tool
     # ============================================================
 
     @step
@@ -385,31 +297,21 @@ class SchedulingWorkflow(Workflow):
 
         tool_call = ev.tool_call
 
-        # --------------------------------------------------------
-        # Find requested tool
-        # --------------------------------------------------------
-
         selected_tool = None
 
+        # Find tool
         for tool in self.tools:
 
             try:
-
                 tool_name = tool.metadata.name
-
             except Exception:
-
                 continue
 
             if tool_name == tool_call.tool_name:
-
                 selected_tool = tool
                 break
 
-        # --------------------------------------------------------
         # Tool not found
-        # --------------------------------------------------------
-
         if selected_tool is None:
 
             error_message = (
@@ -429,10 +331,7 @@ class SchedulingWorkflow(Workflow):
                 observation=error_message
             )
 
-        # ========================================================
         # Execute tool
-        # ========================================================
-
         try:
 
             result = await selected_tool.acall(
@@ -440,10 +339,6 @@ class SchedulingWorkflow(Workflow):
             )
 
             observation = str(result)
-
-            # ----------------------------------------------------
-            # Trace successful tool execution
-            # ----------------------------------------------------
 
             self.tracer.log(
                 "tool_result",
@@ -476,8 +371,7 @@ class SchedulingWorkflow(Workflow):
             )
 
     # ============================================================
-    # STEP 4
-    # Add tool observation and continue reasoning
+    # STEP 4 — Observe
     # ============================================================
 
     @step
@@ -487,36 +381,22 @@ class SchedulingWorkflow(Workflow):
         ev: ObservationEvent,
     ) -> PrepEvent:
 
-        # --------------------------------------------------------
-        # Retrieve reasoning history
-        # --------------------------------------------------------
-
         reasoning_steps = await ctx.get(
             "reasoning_steps",
             default=[],
         )
 
-        # --------------------------------------------------------
-        # Add observation
-        # --------------------------------------------------------
-
+        # Add observation to reasoning history
         reasoning_steps.append(
             ObservationReasoningStep(
                 observation=ev.observation
             )
         )
 
-        # --------------------------------------------------------
-        # Store updated reasoning history
-        # --------------------------------------------------------
-
         await ctx.set(
             "reasoning_steps",
             reasoning_steps,
         )
 
-        # --------------------------------------------------------
-        # Continue reasoning
-        # --------------------------------------------------------
-
+        # Continue the reasoning loop
         return PrepEvent()
