@@ -1,10 +1,7 @@
-from time import time
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
-from llama_index.core.agent.react import (
-    ReActChatFormatter,
-    ReActOutputParser,
-)
+from llama_index.core.agent.react.formatter import ReActChatFormatter
+from llama_index.core.agent.react.output_parser import ReActOutputParser
 from llama_index.core.agent.react.types import (
     ActionReasoningStep,
     ObservationReasoningStep,
@@ -20,397 +17,404 @@ from llama_index.core.workflow import (
     step,
 )
 
-from app.evaluation import AgentEvaluator
 from app.memory import ConversationMemory
 from app.traces import AgentTraceLogger
+from app.tools import (
+    schedule_appointment_tool,
+    search_doctors_tool,
+)
 
 
-# ============================================================
+# -------------------------------------------------------------------
 # Workflow Events
-# ============================================================
-
-class PrepEvent(Event):
-    """Prepare the next agent reasoning iteration."""
-    pass
-
+# -------------------------------------------------------------------
 
 class InputEvent(Event):
-    """Input prepared for the LLM."""
+    """Contains the user's input query."""
+    query: str
 
-    input: list[ChatMessage]
+
+class PrepEvent(Event):
+    """Prepared input for the reasoning loop."""
+    input: List[ChatMessage]
 
 
 class ToolCallEvent(Event):
-    """Tool execution requested by the LLM."""
+    """Represents a tool call requested by the agent."""
+    tool_call: ToolSelection
 
-    tool_calls: list[ToolSelection]
+
+class ObservationEvent(Event):
+    """Contains the result returned by a tool."""
+    observation: str
 
 
-# ============================================================
+# -------------------------------------------------------------------
 # Scheduling Workflow
-# ============================================================
+# -------------------------------------------------------------------
 
 class SchedulingWorkflow(Workflow):
-    """
-    Event-driven healthcare scheduling agent using ReAct reasoning.
-
-    Flow:
-
-        StartEvent
-            ↓
-        PrepEvent
-            ↓
-        InputEvent
-            ↓
-        LLM reasoning
-            ↓
-        ┌───────────────┐
-        │               │
-        ▼               ▼
-    ToolCallEvent    StopEvent
-        │
-        ▼
-    Tool execution
-        │
-        └──────→ PrepEvent
-    """
 
     def __init__(
         self,
         memory: ConversationMemory,
-        tools: list,
+        index: Any,
         tracer: AgentTraceLogger,
-        evaluator: Optional[AgentEvaluator] = None,
-        llm=None,
-        extra_context: str = "",
+        evaluator: Optional[Any] = None,
+        llm: Optional[Any] = None,
         timeout: int = 120,
+        verbose: bool = False,
     ):
-        super().__init__(timeout=timeout)
+        super().__init__(timeout=timeout, verbose=verbose)
 
         self.memory = memory
-        self.tools = tools
+        self.index = index
         self.tracer = tracer
-        self.evaluator = evaluator or AgentEvaluator()
+        self.evaluator = evaluator
         self.llm = llm
 
-        self.formatter = ReActChatFormatter(
-            context=extra_context
-        )
+        # -----------------------------------------------------------
+        # Tools
+        # -----------------------------------------------------------
 
+        self.tools = [
+            search_doctors_tool,
+            schedule_appointment_tool,
+        ]
+
+        # -----------------------------------------------------------
+        # ReAct components
+        # -----------------------------------------------------------
+
+        self.formatter = ReActChatFormatter()
         self.output_parser = ReActOutputParser()
 
-        self.sources = []
-
-    # ========================================================
-    # Step 1 — Receive user request
-    # ========================================================
+    # ----------------------------------------------------------------
+    # STEP 1: Prepare the user request
+    # ----------------------------------------------------------------
 
     @step
-    async def new_user_msg(
-        self,
-        ctx: Context,
-        ev: StartEvent,
-    ) -> PrepEvent:
+    async def prepare(self, ctx: Context, ev: StartEvent) -> PrepEvent:
 
-        start_time = time()
+        query = ev.get("query")
 
-        self.sources = []
+        if not query:
+            raise ValueError("Query is required.")
 
-        user_input = ev.input
+        # Store user message in memory
+        self.memory.add("user", query)
 
+        # Trace
         self.tracer.log(
-            "request_received",
-            user_input,
+            "user_request",
+            {
+                "query": query
+            }
         )
 
-        await ctx.set(
-            "start_time",
-            start_time,
+        # Build conversation messages
+        messages = []
+
+        # System instruction
+        messages.append(
+            ChatMessage(
+                role="system",
+                content=(
+                    "You are a healthcare scheduling assistant.\n\n"
+                    "Your responsibilities are:\n"
+                    "1. Understand the patient's request.\n"
+                    "2. Search for suitable doctors when necessary.\n"
+                    "3. Schedule an appointment when the user provides "
+                    "the required information.\n"
+                    "4. Never claim an appointment is confirmed unless "
+                    "the scheduling tool confirms it.\n"
+                    "5. Ask for missing information when necessary.\n"
+                    "6. Provide concise and clear responses.\n"
+                ),
+            )
         )
 
-        await ctx.set(
-            "current_reasoning",
-            [],
-        )
+        # Previous conversation
+        for message in self.memory.get():
 
-        self.memory.add(
-            role="user",
-            content=user_input,
-        )
+            role = message["role"]
 
-        return PrepEvent()
+            if role == "user":
+                messages.append(
+                    ChatMessage(
+                        role="user",
+                        content=message["content"],
+                    )
+                )
 
-    # ========================================================
-    # Step 2 — Prepare LLM input
-    # ========================================================
+            elif role == "assistant":
+                messages.append(
+                    ChatMessage(
+                        role="assistant",
+                        content=message["content"],
+                    )
+                )
+
+        return PrepEvent(input=messages)
+
+    # ----------------------------------------------------------------
+    # STEP 2: Agent reasoning
+    # ----------------------------------------------------------------
 
     @step
-    async def prepare_chat_history(
+    async def reasoning(
         self,
         ctx: Context,
         ev: PrepEvent,
-    ) -> InputEvent:
+    ) -> ToolCallEvent | StopEvent:
 
-        chat_history = self.memory.get()
+        if self.llm is None:
+            raise ValueError(
+                "LLM has not been provided to SchedulingWorkflow."
+            )
 
-        current_reasoning = await ctx.get(
-            "current_reasoning",
+        # Retrieve previous reasoning steps
+        reasoning_steps = await ctx.get(
+            "reasoning_steps",
             default=[],
         )
 
-        llm_input = self.formatter.format(
-            self.tools,
-            chat_history,
-            current_reasoning=current_reasoning,
-        )
-
-        self.tracer.log(
-            "prepare_llm_input",
-            f"Prepared {len(chat_history)} chat messages.",
-        )
-
-        return InputEvent(
-            input=llm_input,
-        )
-
-    # ========================================================
-    # Step 3 — LLM reasoning
-    # ========================================================
-
-    @step
-    async def handle_llm_input(
-        self,
-        ctx: Context,
-        ev: InputEvent,
-    ) -> ToolCallEvent | StopEvent:
+        # Format messages for ReAct
+        chat_history = ev.input
 
         response = await self.llm.achat(
-            ev.input
+            self.formatter.format(
+                self.tools,
+                chat_history,
+                reasoning_steps,
+            )
         )
 
-        raw_response = response.message.content
+        # Parse LLM response
+        reasoning_step = self.output_parser.parse(response.message.content)
 
-        self.tracer.log(
-            "llm_response",
-            str(raw_response),
-        )
+        # ------------------------------------------------------------
+        # Final answer
+        # ------------------------------------------------------------
 
-        try:
+        if not isinstance(
+            reasoning_step,
+            ActionReasoningStep,
+        ):
 
-            reasoning_step = self.output_parser.parse(
-                raw_response
-            )
+            final_response = response.message.content
 
-            current_reasoning = await ctx.get(
-                "current_reasoning",
-                default=[],
-            )
-
-            current_reasoning.append(
-                reasoning_step
-            )
-
-            # ------------------------------------------------
-            # Final answer
-            # ------------------------------------------------
-
-            if reasoning_step.is_done:
-
-                final_response = reasoning_step.response
-
-                self.memory.add(
-                    role="assistant",
-                    content=final_response,
-                )
-
-                start_time = await ctx.get(
-                    "start_time",
-                    default=time(),
-                )
-
-                latency = time() - start_time
-
-                self.evaluator.log_latency(
-                    latency
-                )
-
-                self.evaluator.log_task(
-                    bool(final_response)
-                )
-
-                self.tracer.log(
-                    "agent_completed",
-                    f"Completed in {latency:.2f}s",
-                )
-
-                return StopEvent(
-                    result={
-                        "response": final_response,
-                        "sources": self.sources,
-                        "reasoning": current_reasoning,
-                        "evaluation": self.evaluator.report(),
-                    }
-                )
-
-            # ------------------------------------------------
-            # Tool call
-            # ------------------------------------------------
-
-            if isinstance(
-                reasoning_step,
-                ActionReasoningStep,
-            ):
-
-                tool_name = reasoning_step.action
-                tool_args = reasoning_step.action_input
-
-                self.tracer.log(
-                    "tool_selected",
-                    f"{tool_name}({tool_args})",
-                )
-
-                return ToolCallEvent(
-                    tool_calls=[
-                        ToolSelection(
-                            tool_id="agent_tool_call",
-                            tool_name=tool_name,
-                            tool_kwargs=tool_args,
-                        )
-                    ]
-                )
-
-        except Exception as exc:
-
-            current_reasoning = await ctx.get(
-                "current_reasoning",
-                default=[],
-            )
-
-            current_reasoning.append(
-                ObservationReasoningStep(
-                    observation=(
-                        "Error parsing LLM reasoning: "
-                        f"{exc}"
-                    )
-                )
+            self.memory.add(
+                "assistant",
+                final_response,
             )
 
             self.tracer.log(
-                "reasoning_error",
-                str(exc),
+                "final_response",
+                {
+                    "response": final_response
+                }
             )
 
-        return PrepEvent()
+            return StopEvent(
+                result={
+                    "response": final_response,
+                    "traces": self.tracer.get_traces(),
+                }
+            )
 
-    # ========================================================
-    # Step 4 — Execute tools
-    # ========================================================
+        # ------------------------------------------------------------
+        # Tool call
+        # ------------------------------------------------------------
+
+        reasoning_steps.append(reasoning_step)
+
+        await ctx.set(
+            "reasoning_steps",
+            reasoning_steps,
+        )
+
+        tool_call = ToolSelection(
+            tool_id=reasoning_step.action,
+            tool_name=reasoning_step.action,
+            tool_kwargs=reasoning_step.action_input,
+        )
+
+        self.tracer.log(
+            "tool_call",
+            {
+                "tool": reasoning_step.action,
+                "arguments": reasoning_step.action_input,
+            }
+        )
+
+        return ToolCallEvent(
+            tool_call=tool_call
+        )
+
+    # ----------------------------------------------------------------
+    # STEP 3: Execute tool
+    # ----------------------------------------------------------------
 
     @step
-    async def handle_tool_calls(
+    async def execute_tool(
         self,
         ctx: Context,
         ev: ToolCallEvent,
+    ) -> ObservationEvent:
+
+        tool_call = ev.tool_call
+
+        selected_tool = None
+
+        for tool in self.tools:
+
+            if tool.metadata.name == tool_call.tool_name:
+                selected_tool = tool
+                break
+
+        if selected_tool is None:
+
+            error_message = (
+                f"Tool '{tool_call.tool_name}' was not found."
+            )
+
+            self.tracer.log(
+                "tool_error",
+                {
+                    "tool": tool_call.tool_name,
+                    "error": error_message,
+                }
+            )
+
+            return ObservationEvent(
+                observation=error_message
+            )
+
+        try:
+
+            result = await selected_tool.acall(
+                **tool_call.tool_kwargs
+            )
+
+            observation = str(result)
+
+            self.tracer.log(
+                "tool_result",
+                {
+                    "tool": tool_call.tool_name,
+                    "result": observation,
+                }
+            )
+
+            return ObservationEvent(
+                observation=observation
+            )
+
+        except Exception as exc:
+
+            error_message = (
+                f"Tool execution failed: {str(exc)}"
+            )
+
+            self.tracer.log(
+                "tool_error",
+                {
+                    "tool": tool_call.tool_name,
+                    "error": str(exc),
+                }
+            )
+
+            return ObservationEvent(
+                observation=error_message
+            )
+
+    # ----------------------------------------------------------------
+    # STEP 4: Add observation and continue reasoning
+    # ----------------------------------------------------------------
+
+    @step
+    async def observe(
+        self,
+        ctx: Context,
+        ev: ObservationEvent,
     ) -> PrepEvent:
 
-        current_reasoning = await ctx.get(
-            "current_reasoning",
+        reasoning_steps = await ctx.get(
+            "reasoning_steps",
             default=[],
         )
 
-        tools_by_name = {
-            tool.metadata.get_name(): tool
-            for tool in self.tools
-        }
+        reasoning_steps.append(
+            ObservationReasoningStep(
+                observation=ev.observation
+            )
+        )
 
-        for tool_call in ev.tool_calls:
+        await ctx.set(
+            "reasoning_steps",
+            reasoning_steps,
+        )
 
-            tool_name = tool_call.tool_name
+        # Get original messages
+        messages = await ctx.get(
+            "messages",
+            default=None,
+        )
 
-            tool = tools_by_name.get(
-                tool_name
+        if messages is None:
+
+            # Reconstruct from memory
+            messages = []
+
+            for message in self.memory.get():
+
+                if message["role"] == "user":
+
+                    messages.append(
+                        ChatMessage(
+                            role="user",
+                            content=message["content"],
+                        )
+                    )
+
+                elif message["role"] == "assistant":
+
+                    messages.append(
+                        ChatMessage(
+                            role="assistant",
+                            content=message["content"],
+                        )
+                    )
+
+            await ctx.set(
+                "messages",
+                messages,
             )
 
-            # ------------------------------------------------
-            # Invalid tool
-            # ------------------------------------------------
+        return PrepEvent(
+            input=messages
+        )
 
-            if tool is None:
+    # ----------------------------------------------------------------
+    # Override prepare to preserve context
+    # ----------------------------------------------------------------
 
-                message = (
-                    f"Tool '{tool_name}' does not exist."
-                )
+    @step
+    async def initialize_context(
+        self,
+        ctx: Context,
+        ev: PrepEvent,
+    ) -> PrepEvent:
 
-                self.tracer.log(
-                    "invalid_tool",
-                    message,
-                )
+        await ctx.set(
+            "messages",
+            ev.input,
+        )
 
-                self.evaluator.log_invalid_action()
+        await ctx.set(
+            "reasoning_steps",
+            [],
+        )
 
-                current_reasoning.append(
-                    ObservationReasoningStep(
-                        observation=message
-                    )
-                )
-
-                continue
-
-            # ------------------------------------------------
-            # Execute tool
-            # ------------------------------------------------
-
-            try:
-
-                self.tracer.log(
-                    "tool_execution",
-                    f"Executing {tool_name}",
-                )
-
-                tool_output = tool(
-                    **tool_call.tool_kwargs
-                )
-
-                output_content = (
-                    tool_output.content
-                    if hasattr(
-                        tool_output,
-                        "content",
-                    )
-                    else str(tool_output)
-                )
-
-                self.sources.append(
-                    tool_output
-                )
-
-                current_reasoning.append(
-                    ObservationReasoningStep(
-                        observation=output_content
-                    )
-                )
-
-                self.tracer.log(
-                    "tool_result",
-                    output_content,
-                )
-
-            except Exception as exc:
-
-                message = (
-                    f"Error executing "
-                    f"{tool_name}: {exc}"
-                )
-
-                self.tracer.log(
-                    "tool_error",
-                    message,
-                )
-
-                current_reasoning.append(
-                    ObservationReasoningStep(
-                        observation=message
-                    )
-                )
-
-        return PrepEvent()
+        return ev
