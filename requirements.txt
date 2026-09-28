@@ -2,11 +2,10 @@ langchain
 langchain-core
 langchain-groq
 langgraph
-langchain-community
 
 fastapi
 uvicorn[standard]
 python-dotenv
 pydantic
 
-pandas
+sqlalchemy
