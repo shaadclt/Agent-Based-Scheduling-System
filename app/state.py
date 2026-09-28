@@ -2,7 +2,7 @@ from typing import Any, TypedDict
 
 
 class SchedulingState(TypedDict, total=False):
-    # Original user request
+    # Current user request
     query: str
 
     # Conversation
@@ -11,21 +11,14 @@ class SchedulingState(TypedDict, total=False):
     # Patient information
     patient_name: str
 
-    # Request understanding
-    intent: str
+    # Scheduling information
     specialty: str
-
-    # Doctor information
     doctor_name: str
-
-    # Appointment information
     appointment_date: str
     appointment_time: str
 
-    # Availability
-    available_slots: list
-
-    # Workflow control
+    # Agent state
+    intent: str
     status: str
 
     # Tool results
@@ -33,8 +26,8 @@ class SchedulingState(TypedDict, total=False):
     availability_result: Any
     booking_result: Any
 
-    # Final response
+    # Agent response
     response: str
 
-    # Debugging / observability
+    # Observability
     trace: list
