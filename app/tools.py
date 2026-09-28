@@ -1,44 +1,25 @@
 import json
-from pathlib import Path
-from typing import Optional
+from datetime import datetime
 
 from langchain_core.tools import tool
+from sqlalchemy.exc import IntegrityError
 
-
-# ============================================================
-# File Paths
-# ============================================================
-
-DOCTORS_FILE = Path("data/doctors.json")
-APPOINTMENTS_FILE = Path("data/doctor_appointment_requests.csv")
+from app.database import SessionLocal
+from app.models import (
+    Appointment,
+    Doctor,
+    DoctorAvailability,
+    Patient,
+)
 
 
 # ============================================================
 # Helper Functions
 # ============================================================
 
-def _load_doctors() -> list:
-    """
-    Load doctor records from the JSON database.
-    """
-
-    if not DOCTORS_FILE.exists():
-        raise FileNotFoundError(
-            f"Doctor database not found: {DOCTORS_FILE}"
-        )
-
-    with open(DOCTORS_FILE, "r", encoding="utf-8") as file:
-        return json.load(file)
-
-
 def _normalize_name(name: str) -> str:
     """
-    Normalize doctor names for flexible matching.
-
-    Examples:
-        "Dr. Michael Brown" -> "michael brown"
-        "Michael Brown"     -> "michael brown"
-        "DR MICHAEL BROWN"  -> "michael brown"
+    Normalize doctor/patient names.
     """
 
     if not name:
@@ -46,42 +27,46 @@ def _normalize_name(name: str) -> str:
 
     normalized = name.lower().strip()
 
-    # Remove common doctor prefixes
-    normalized = normalized.replace("dr.", " ")
-    normalized = normalized.replace("dr ", " ")
+    normalized = normalized.replace(
+        "dr.",
+        " ",
+    )
 
-    # Normalize whitespace
-    normalized = " ".join(normalized.split())
+    normalized = normalized.replace(
+        "dr ",
+        " ",
+    )
+
+    normalized = " ".join(
+        normalized.split()
+    )
 
     return normalized
 
 
-def _find_doctor(doctor_name: str) -> Optional[dict]:
+def _find_doctor(
+    db,
+    doctor_name: str,
+):
     """
-    Find a doctor using flexible name matching.
+    Find doctor using flexible name matching.
     """
 
-    doctors = _load_doctors()
+    requested_name = _normalize_name(
+        doctor_name
+    )
 
-    requested_name = _normalize_name(doctor_name)
-
-    if not requested_name:
-        return None
+    doctors = db.query(Doctor).all()
 
     for doctor in doctors:
 
         database_name = _normalize_name(
-            doctor.get("name", "")
+            doctor.name
         )
 
-        if not database_name:
-            continue
-
-        # Exact match
         if database_name == requested_name:
             return doctor
 
-        # Partial match
         if requested_name in database_name:
             return doctor
 
@@ -91,171 +76,171 @@ def _find_doctor(doctor_name: str) -> Optional[dict]:
     return None
 
 
+def _parse_date(date_string: str):
+
+    return datetime.strptime(
+        date_string,
+        "%Y-%m-%d",
+    ).date()
+
+
+def _parse_time(time_string: str):
+
+    return datetime.strptime(
+        time_string,
+        "%H:%M",
+    ).time()
+
+
 # ============================================================
-# Doctor Search Tool
+# Search Doctors
 # ============================================================
 
 @tool
 def search_doctors(
-    specialty: Optional[str] = None,
-    query: Optional[str] = None,
+    specialty: str = "",
+    query: str = "",
 ) -> str:
     """
-    Search the doctor database by medical specialty,
-    doctor name, or general search query.
-
-    Args:
-        specialty: Medical specialty such as Neurologist,
-                   Cardiologist, Dermatologist, etc.
-        query: Doctor name or general search text.
-
-    Returns:
-        JSON string containing matching doctors.
+    Search doctors by specialty, name,
+    or general query.
     """
 
-    doctors = _load_doctors()
+    db = SessionLocal()
 
-    specialty_normalized = (
-        specialty.lower().strip()
-        if specialty
-        else ""
-    )
+    try:
 
-    query_normalized = (
-        query.lower().strip()
-        if query
-        else ""
-    )
+        doctors = db.query(Doctor).all()
 
-    # Normalize punctuation
-    specialty_normalized = (
-        specialty_normalized
-        .replace(",", "")
-        .replace(".", "")
-    )
+        specialty_normalized = (
+            specialty.lower().strip()
+            if specialty
+            else ""
+        )
 
-    query_normalized = (
-        query_normalized
-        .replace(",", "")
-        .replace(".", "")
-    )
+        query_normalized = (
+            query.lower().strip()
+            if query
+            else ""
+        )
 
-    matches = []
+        matches = []
 
-    for doctor in doctors:
+        for doctor in doctors:
 
-        name = str(
-            doctor.get("name", "")
-        ).lower()
-
-        doctor_specialty = str(
-            doctor.get("specialty", "")
-        ).lower()
-
-        description = str(
-            doctor.get("description", "")
-        ).lower()
-
-        # Remove "dr." for matching
-        normalized_name = _normalize_name(name)
-
-        # ----------------------------------------------------
-        # Specialty matching
-        # ----------------------------------------------------
-
-        specialty_match = False
-
-        if specialty_normalized:
-
-            specialty_match = (
-                specialty_normalized in doctor_specialty
-                or doctor_specialty in specialty_normalized
+            name = doctor.name.lower()
+            doctor_specialty = (
+                doctor.specialty.lower()
+            )
+            description = (
+                doctor.description.lower()
+                if doctor.description
+                else ""
             )
 
-        # ----------------------------------------------------
-        # Query matching
-        # ----------------------------------------------------
-
-        query_match = False
-
-        if query_normalized:
-
-            query_match = (
-                query_normalized in normalized_name
-                or query_normalized in doctor_specialty
-                or query_normalized in description
+            normalized_name = _normalize_name(
+                doctor.name
             )
 
-        # ----------------------------------------------------
-        # Token-based matching
-        # ----------------------------------------------------
+            specialty_match = False
 
-        token_match = False
+            if specialty_normalized:
 
-        if query_normalized:
-
-            query_tokens = query_normalized.split()
-
-            searchable_text = " ".join(
-                [
-                    normalized_name,
-                    doctor_specialty,
-                    description,
-                ]
-            )
-
-            # Match when all meaningful query tokens exist
-            # somewhere in the doctor's searchable information.
-            if query_tokens:
-                token_match = all(
-                    token in searchable_text
-                    for token in query_tokens
-                    if len(token) > 2
+                specialty_match = (
+                    specialty_normalized
+                    in doctor_specialty
+                    or
+                    doctor_specialty
+                    in specialty_normalized
                 )
 
-        if specialty_match or query_match or token_match:
-            matches.append(
+            query_match = False
+
+            if query_normalized:
+
+                query_match = (
+                    query_normalized
+                    in normalized_name
+                    or
+                    query_normalized
+                    in doctor_specialty
+                    or
+                    query_normalized
+                    in description
+                )
+
+            token_match = False
+
+            if query_normalized:
+
+                tokens = [
+                    token
+                    for token
+                    in query_normalized.split()
+                    if len(token) > 2
+                ]
+
+                searchable_text = " ".join(
+                    [
+                        normalized_name,
+                        doctor_specialty,
+                        description,
+                    ]
+                )
+
+                if tokens:
+
+                    token_match = all(
+                        token in searchable_text
+                        for token in tokens
+                    )
+
+            if (
+                specialty_match
+                or query_match
+                or token_match
+            ):
+
+                matches.append(
+                    {
+                        "id": doctor.id,
+                        "name": doctor.name,
+                        "specialty": doctor.specialty,
+                        "experience": doctor.experience,
+                        "description": doctor.description,
+                    }
+                )
+
+        if not matches:
+
+            return json.dumps(
                 {
-                    "name": doctor.get("name"),
-                    "specialty": doctor.get("specialty"),
-                    "experience": doctor.get("experience"),
-                    "description": doctor.get("description"),
-                }
+                    "status": "no_results",
+                    "message": (
+                        "No doctors were found "
+                        "matching the requested criteria."
+                    ),
+                    "doctors": [],
+                },
+                indent=2,
             )
 
-    # --------------------------------------------------------
-    # No results
-    # --------------------------------------------------------
-
-    if not matches:
         return json.dumps(
             {
-                "status": "no_results",
-                "message": (
-                    "No doctors were found matching "
-                    "the requested criteria."
-                ),
-                "doctors": [],
+                "status": "success",
+                "count": len(matches),
+                "doctors": matches,
             },
             indent=2,
         )
 
-    # --------------------------------------------------------
-    # Results
-    # --------------------------------------------------------
+    finally:
 
-    return json.dumps(
-        {
-            "status": "success",
-            "count": len(matches),
-            "doctors": matches,
-        },
-        indent=2,
-    )
+        db.close()
 
 
 # ============================================================
-# Availability Tool
+# Check Availability
 # ============================================================
 
 @tool
@@ -264,65 +249,137 @@ def check_availability(
     appointment_date: str,
 ) -> str:
     """
-    Check available appointment slots for a doctor
-    on a specific date.
-
-    Args:
-        doctor_name: Name of the doctor.
-        appointment_date: Appointment date in YYYY-MM-DD format.
-
-    Returns:
-        JSON string containing available appointment slots.
+    Check real availability stored in SQLite.
     """
 
-    doctor = _find_doctor(doctor_name)
+    db = SessionLocal()
 
-    # --------------------------------------------------------
-    # Doctor not found
-    # --------------------------------------------------------
+    try:
 
-    if doctor is None:
+        doctor = _find_doctor(
+            db,
+            doctor_name,
+        )
+
+        if doctor is None:
+
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Doctor '{doctor_name}' "
+                        "was not found."
+                    ),
+                    "available_slots": [],
+                },
+                indent=2,
+            )
+
+        requested_date = _parse_date(
+            appointment_date
+        )
+
+        availability = (
+            db.query(DoctorAvailability)
+            .filter(
+                DoctorAvailability.doctor_id
+                == doctor.id,
+                DoctorAvailability.date
+                == requested_date,
+            )
+            .all()
+        )
+
+        if not availability:
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "doctor": doctor.name,
+                    "date": appointment_date,
+                    "available_slots": [],
+                    "message": (
+                        "No availability found "
+                        "for this date."
+                    ),
+                },
+                indent=2,
+            )
+
+        # ----------------------------------------------------
+        # Get existing bookings
+        # ----------------------------------------------------
+
+        existing_appointments = (
+            db.query(Appointment)
+            .filter(
+                Appointment.doctor_id
+                == doctor.id,
+                Appointment.appointment_date
+                == requested_date,
+                Appointment.status
+                == "confirmed",
+            )
+            .all()
+        )
+
+        booked_times = {
+            appointment.appointment_time.strftime(
+                "%H:%M"
+            )
+            for appointment
+            in existing_appointments
+        }
+
+        # ----------------------------------------------------
+        # Calculate free slots
+        # ----------------------------------------------------
+
+        available_slots = []
+
+        for slot in availability:
+
+            slot_time = slot.start_time.strftime(
+                "%H:%M"
+            )
+
+            if slot_time not in booked_times:
+
+                available_slots.append(
+                    slot_time
+                )
+
+        return json.dumps(
+            {
+                "status": "success",
+                "doctor": doctor.name,
+                "specialty": doctor.specialty,
+                "date": appointment_date,
+                "available_slots": available_slots,
+            },
+            indent=2,
+        )
+
+    except ValueError:
 
         return json.dumps(
             {
                 "status": "error",
                 "message": (
-                    f"Doctor '{doctor_name}' was not found."
+                    "Invalid date format. "
+                    "Use YYYY-MM-DD."
                 ),
-                "available_slots": [],
             },
             indent=2,
         )
 
-    # --------------------------------------------------------
-    # Current Phase 1 availability
-    # --------------------------------------------------------
-    # These are deterministic sample slots.
-    # Phase 2 can replace this with database-backed
-    # doctor schedules and existing appointment checks.
+    finally:
 
-    available_slots = [
-        "09:00",
-        "10:30",
-        "14:00",
-        "15:30",
-        "17:00",
-    ]
-
-    return json.dumps(
-        {
-            "status": "success",
-            "doctor": doctor.get("name"),
-            "specialty": doctor.get("specialty"),
-            "date": appointment_date,
-            "available_slots": available_slots,
-        },
-        indent=2,
-    )
+        db.close()
 
 
 # ============================================================
-# Booking Tool
+# Book Appointment
 # ============================================================
 
 @tool
@@ -333,154 +390,223 @@ def book_appointment(
     appointment_time: str,
 ) -> str:
     """
-    Book an appointment with a doctor.
-
-    Args:
-        doctor_name: Name of the doctor.
-        patient_name: Patient's name.
-        appointment_date: Appointment date in YYYY-MM-DD format.
-        appointment_time: Appointment time in HH:MM format.
-
-    Returns:
-        JSON string containing booking confirmation.
+    Book an appointment using the SQLite database.
+    Prevents double booking.
     """
 
-    # --------------------------------------------------------
-    # Validate doctor
-    # --------------------------------------------------------
+    db = SessionLocal()
 
-    doctor = _find_doctor(doctor_name)
+    try:
 
-    if doctor is None:
+        # ----------------------------------------------------
+        # Find doctor
+        # ----------------------------------------------------
 
-        return json.dumps(
-            {
-                "status": "error",
-                "message": (
-                    f"Doctor '{doctor_name}' was not found."
-                ),
-            },
-            indent=2,
+        doctor = _find_doctor(
+            db,
+            doctor_name,
         )
 
-    # --------------------------------------------------------
-    # Validate required fields
-    # --------------------------------------------------------
+        if doctor is None:
 
-    if not patient_name.strip():
-
-        return json.dumps(
-            {
-                "status": "error",
-                "message": "Patient name is required.",
-            },
-            indent=2,
-        )
-
-    if not appointment_date.strip():
-
-        return json.dumps(
-            {
-                "status": "error",
-                "message": "Appointment date is required.",
-            },
-            indent=2,
-        )
-
-    if not appointment_time.strip():
-
-        return json.dumps(
-            {
-                "status": "error",
-                "message": "Appointment time is required.",
-            },
-            indent=2,
-        )
-
-    # --------------------------------------------------------
-    # Validate appointment slot
-    # --------------------------------------------------------
-
-    valid_slots = [
-        "09:00",
-        "10:30",
-        "14:00",
-        "15:30",
-        "17:00",
-    ]
-
-    if appointment_time not in valid_slots:
-
-        return json.dumps(
-            {
-                "status": "error",
-                "message": (
-                    f"'{appointment_time}' is not a valid "
-                    "appointment slot."
-                ),
-                "available_slots": valid_slots,
-            },
-            indent=2,
-        )
-
-    # --------------------------------------------------------
-    # Create data directory if necessary
-    # --------------------------------------------------------
-
-    APPOINTMENTS_FILE.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    # --------------------------------------------------------
-    # Create CSV file with header if it doesn't exist
-    # --------------------------------------------------------
-
-    file_exists = APPOINTMENTS_FILE.exists()
-
-    with open(
-        APPOINTMENTS_FILE,
-        "a",
-        encoding="utf-8",
-        newline="",
-    ) as file:
-
-        if not file_exists:
-
-            file.write(
-                "patient_name,"
-                "doctor_name,"
-                "specialty,"
-                "appointment_date,"
-                "appointment_time\n"
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Doctor '{doctor_name}' "
+                        "was not found."
+                    ),
+                },
+                indent=2,
             )
 
-        file.write(
-            f'"{patient_name}",'
-            f'"{doctor.get("name")}",'
-            f'"{doctor.get("specialty")}",'
-            f'"{appointment_date}",'
-            f'"{appointment_time}"\n'
+        # ----------------------------------------------------
+        # Validate patient
+        # ----------------------------------------------------
+
+        patient_name = patient_name.strip()
+
+        if not patient_name:
+
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "Patient name is required."
+                    ),
+                },
+                indent=2,
+            )
+
+        # ----------------------------------------------------
+        # Parse date/time
+        # ----------------------------------------------------
+
+        try:
+
+            requested_date = _parse_date(
+                appointment_date
+            )
+
+            requested_time = _parse_time(
+                appointment_time
+            )
+
+        except ValueError:
+
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "Invalid date or time format. "
+                        "Use YYYY-MM-DD and HH:MM."
+                    ),
+                },
+                indent=2,
+            )
+
+        # ----------------------------------------------------
+        # Check availability
+        # ----------------------------------------------------
+
+        availability = (
+            db.query(DoctorAvailability)
+            .filter(
+                DoctorAvailability.doctor_id
+                == doctor.id,
+                DoctorAvailability.date
+                == requested_date,
+                DoctorAvailability.start_time
+                == requested_time,
+            )
+            .first()
         )
 
-    # --------------------------------------------------------
-    # Return confirmation
-    # --------------------------------------------------------
+        if availability is None:
 
-    return json.dumps(
-        {
-            "status": "success",
-            "message": "Appointment booked successfully.",
-            "appointment": {
-                "patient_name": patient_name,
-                "doctor_name": doctor.get("name"),
-                "specialty": doctor.get("specialty"),
-                "date": appointment_date,
-                "time": appointment_time,
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "The selected time is not "
+                        "available for this doctor."
+                    ),
+                },
+                indent=2,
+            )
+
+        # ----------------------------------------------------
+        # Check existing appointment
+        # ----------------------------------------------------
+
+        existing = (
+            db.query(Appointment)
+            .filter(
+                Appointment.doctor_id
+                == doctor.id,
+                Appointment.appointment_date
+                == requested_date,
+                Appointment.appointment_time
+                == requested_time,
+                Appointment.status
+                == "confirmed",
+            )
+            .first()
+        )
+
+        if existing:
+
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "This appointment slot has "
+                        "already been booked."
+                    ),
+                },
+                indent=2,
+            )
+
+        # ----------------------------------------------------
+        # Find or create patient
+        # ----------------------------------------------------
+
+        patient = (
+            db.query(Patient)
+            .filter(
+                Patient.name == patient_name
+            )
+            .first()
+        )
+
+        if patient is None:
+
+            patient = Patient(
+                name=patient_name
+            )
+
+            db.add(patient)
+            db.flush()
+
+        # ----------------------------------------------------
+        # Create appointment
+        # ----------------------------------------------------
+
+        appointment = Appointment(
+            patient_id=patient.id,
+            doctor_id=doctor.id,
+            appointment_date=requested_date,
+            appointment_time=requested_time,
+            status="confirmed",
+        )
+
+        db.add(appointment)
+
+        try:
+
+            db.commit()
+
+        except IntegrityError:
+
+            db.rollback()
+
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        "The appointment slot was "
+                        "already booked."
+                    ),
+                },
+                indent=2,
+            )
+
+        # ----------------------------------------------------
+        # Confirmation
+        # ----------------------------------------------------
+
+        return json.dumps(
+            {
+                "status": "success",
+                "message": (
+                    "Appointment booked successfully."
+                ),
+                "appointment": {
+                    "id": appointment.id,
+                    "patient_name": patient.name,
+                    "doctor_name": doctor.name,
+                    "specialty": doctor.specialty,
+                    "date": appointment_date,
+                    "time": appointment_time,
+                    "status": appointment.status,
+                },
             },
-        },
-        indent=2,
-    )
+            indent=2,
+        )
+
+    finally:
+
+        db.close()
 
 
 # ============================================================
@@ -488,9 +614,6 @@ def book_appointment(
 # ============================================================
 
 def get_tools():
-    """
-    Return all tools available to the scheduling agent.
-    """
 
     return [
         search_doctors,
