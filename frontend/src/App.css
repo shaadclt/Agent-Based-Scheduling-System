@@ -85,6 +85,32 @@ input {
   background: #22c55e;
 }
 
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.new-chat-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid #dce2ea;
+  border-radius: 9px;
+  background: white;
+  color: #334155;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.new-chat-button:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
 /* Dashboard */
 
 .dashboard {
@@ -432,6 +458,16 @@ input {
 }
 
 @media (max-width: 600px) {
+  .header-actions {
+    gap: 8px;
+  }
+
+  .new-chat-button {
+    padding: 8px 9px;
+    font-size: 11px;
+  }
+
+
   .header {
     padding: 0 16px;
   }
