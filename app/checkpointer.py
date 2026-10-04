@@ -4,7 +4,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 
 # ============================================================
-# Configuration
+# Paths
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -22,9 +22,15 @@ CHECKPOINT_FILE = (
 
 
 # ============================================================
-# Checkpointer
+# Persistent SQLite Checkpointer
 # ============================================================
 
-checkpointer = SqliteSaver.from_conn_string(
-    str(CHECKPOINT_FILE)
+_checkpointer_context = (
+    SqliteSaver.from_conn_string(
+        str(CHECKPOINT_FILE)
+    )
+)
+
+checkpointer = (
+    _checkpointer_context.__enter__()
 )
