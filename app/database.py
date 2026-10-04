@@ -5,25 +5,29 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 
 # ============================================================
-# Database Configuration
+# Paths
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-DATABASE_DIR = BASE_DIR / "data"
-DATABASE_DIR.mkdir(
+DATA_DIR = BASE_DIR / "data"
+
+DATA_DIR.mkdir(
     parents=True,
     exist_ok=True,
 )
 
-DATABASE_FILE = DATABASE_DIR / "healthcare.db"
-
-DATABASE_URL = f"sqlite:///{DATABASE_FILE}"
-
 
 # ============================================================
-# Engine
+# Healthcare Database
 # ============================================================
+
+DATABASE_FILE = DATA_DIR / "healthcare.db"
+
+DATABASE_URL = (
+    f"sqlite:///{DATABASE_FILE}"
+)
+
 
 engine = create_engine(
     DATABASE_URL,
@@ -33,10 +37,6 @@ engine = create_engine(
 )
 
 
-# ============================================================
-# Session
-# ============================================================
-
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
@@ -44,27 +44,23 @@ SessionLocal = sessionmaker(
 )
 
 
-# ============================================================
-# Base
-# ============================================================
-
 Base = declarative_base()
 
 
 # ============================================================
-# Database Initialization
+# Initialization
 # ============================================================
 
 def init_db():
     """
-    Create all database tables.
+    Create healthcare application tables.
     """
 
     from app.models import (
-        Doctor,
-        Patient,
-        DoctorAvailability,
         Appointment,
+        Doctor,
+        DoctorAvailability,
+        Patient,
     )
 
     Base.metadata.create_all(
