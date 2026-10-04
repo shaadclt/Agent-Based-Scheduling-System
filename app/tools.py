@@ -195,8 +195,14 @@ def search_doctors(
                         for token in tokens
                     )
 
+            # When no search criteria are supplied, return all
+            # doctors. This supports requests such as:
+            # "Can you list the doctors available?"
+            no_filters = not specialty_normalized and not query_normalized
+
             if (
-                specialty_match
+                no_filters
+                or specialty_match
                 or query_match
                 or token_match
             ):
