@@ -246,6 +246,128 @@ def search_doctors(
 
 
 # ============================================================
+# Available Dates
+# ============================================================
+
+@tool
+def get_available_dates(
+    doctor_name: str,
+) -> str:
+    """
+    List dates on which a doctor has at least one free
+    appointment slot in the SQLite availability data.
+
+    Existing confirmed appointments are excluded from the
+    calculation, so a date is returned only when at least
+    one slot remains bookable.
+    """
+
+    db = SessionLocal()
+
+    try:
+
+        doctor = _find_doctor(
+            db,
+            doctor_name,
+        )
+
+        if doctor is None:
+
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": (
+                        f"Doctor '{doctor_name}' "
+                        "was not found."
+                    ),
+                    "available_dates": [],
+                },
+                indent=2,
+            )
+
+        availability = (
+            db.query(DoctorAvailability)
+            .filter(
+                DoctorAvailability.doctor_id
+                == doctor.id,
+            )
+            .order_by(
+                DoctorAvailability.date,
+                DoctorAvailability.start_time,
+            )
+            .all()
+        )
+
+        if not availability:
+
+            return json.dumps(
+                {
+                    "status": "success",
+                    "doctor": doctor.name,
+                    "specialty": doctor.specialty,
+                    "available_dates": [],
+                    "message": (
+                        "No availability is configured "
+                        "for this doctor."
+                    ),
+                },
+                indent=2,
+            )
+
+        existing_appointments = (
+            db.query(Appointment)
+            .filter(
+                Appointment.doctor_id == doctor.id,
+                Appointment.status == "confirmed",
+            )
+            .all()
+        )
+
+        booked_slots = {
+            (
+                appointment.appointment_date,
+                appointment.appointment_time,
+            )
+            for appointment in existing_appointments
+        }
+
+        available_dates = []
+        seen_dates = set()
+
+        for slot in availability:
+
+            slot_key = (
+                slot.date,
+                slot.start_time,
+            )
+
+            if slot_key in booked_slots:
+                continue
+
+            if slot.date in seen_dates:
+                continue
+
+            seen_dates.add(slot.date)
+            available_dates.append(
+                slot.date.isoformat()
+            )
+
+        return json.dumps(
+            {
+                "status": "success",
+                "doctor": doctor.name,
+                "specialty": doctor.specialty,
+                "available_dates": available_dates,
+            },
+            indent=2,
+        )
+
+    finally:
+
+        db.close()
+
+
+# ============================================================
 # Check Availability
 # ============================================================
 
@@ -623,6 +745,7 @@ def get_tools():
 
     return [
         search_doctors,
+        get_available_dates,
         check_availability,
         book_appointment,
     ]
