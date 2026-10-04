@@ -5,6 +5,7 @@ import {
   CalendarDays,
   CheckCircle2,
   Clock,
+  Plus,
   Send,
   UserRound,
 } from "lucide-react";
@@ -14,10 +15,8 @@ import "./App.css";
 
 
 function App() {
-  const [threadId] = useState(
-    () =>
-      localStorage.getItem("scheduling_thread_id") ||
-      crypto.randomUUID()
+  const [threadId, setThreadId] = useState(
+    () => crypto.randomUUID()
   );
 
   const [messages, setMessages] = useState([
@@ -40,11 +39,28 @@ function App() {
     patient: "",
   });
 
-  const saveThreadId = () => {
-    localStorage.setItem(
-      "scheduling_thread_id",
-      threadId
-    );
+  const startNewConversation = () => {
+    setThreadId(crypto.randomUUID());
+
+    setMessages([
+      {
+        role: "assistant",
+        content:
+          "Hello! I can help you find a doctor and schedule an appointment. What would you like to do?",
+      },
+    ]);
+
+    setInput("");
+    setLoading(false);
+    setTrace([]);
+    setStatus("ready");
+
+    setAppointment({
+      doctor: "",
+      date: "",
+      time: "",
+      patient: "",
+    });
   };
 
   const handleSubmit = async (event) => {
@@ -69,8 +85,6 @@ function App() {
     setLoading(true);
 
     try {
-      saveThreadId();
-
       const result = await sendMessage(
         query,
         threadId
@@ -124,6 +138,19 @@ function App() {
           ].details
         );
 
+      // A doctor search is a separate workflow. Clear any
+      // appointment information left over from a previous
+      // booking conversation.
+      if (latest.intent === "doctor_search") {
+        setAppointment({
+          doctor: "",
+          date: "",
+          time: "",
+          patient: "",
+        });
+        return;
+      }
+
       setAppointment((previous) => ({
         doctor:
           latest.doctor_name ||
@@ -160,9 +187,20 @@ function App() {
           </div>
         </div>
 
-        <div className="status-indicator">
-          <span />
-          Agent Online
+        <div className="header-actions">
+          <div className="status-indicator">
+            <span />
+            Agent Online
+          </div>
+
+          <button
+            type="button"
+            className="new-chat-button"
+            onClick={startNewConversation}
+          >
+            <Plus size={16} />
+            New Conversation
+          </button>
         </div>
       </header>
 
@@ -255,7 +293,8 @@ function AppointmentCard({
   status,
 }) {
   const confirmed =
-    status === "confirmed";
+    status === "confirmed" ||
+    status === "booking_completed";
 
   return (
     <div className="card appointment-card">
