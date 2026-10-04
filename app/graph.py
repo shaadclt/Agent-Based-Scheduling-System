@@ -10,6 +10,7 @@ from app.state import SchedulingState
 from app.tools import (
     book_appointment,
     check_availability,
+    get_available_dates,
     search_doctors,
 )
 
@@ -172,7 +173,7 @@ Classify the CURRENT user message first.
 Return ONLY valid JSON:
 
 {{
-    "intent": "doctor_search | appointment_booking | general",
+    "intent": "doctor_search | availability_dates | appointment_booking | general",
     "specialty": "",
     "doctor_name": "",
     "patient_name": "",
@@ -185,7 +186,15 @@ Rules:
 1. A request to find, list, browse, or search for doctors is
    doctor_search.
 
-2. A request to book or schedule an appointment is
+2. A request to list the dates when a specific doctor is
+   available is availability_dates.
+
+Examples:
+- "What dates is Dr Emily available?"
+- "Can you list the dates when Dr Emily is available?"
+- "When can I see Dr Emily?"
+
+3. A request to book or schedule an appointment is
    appointment_booking.
 
 3. If the current workflow is an active appointment workflow,
@@ -281,6 +290,20 @@ Rules:
         state["available_slots"] = []
 
     # --------------------------------------------------------
+    # Doctor availability-date request. This is a lookup
+    # request, not a booking step, so old booking entities
+    # must not control the response.
+    # --------------------------------------------------------
+    elif parsed_intent == "availability_dates":
+        state["intent"] = "availability_dates"
+        state["specialty"] = ""
+        state["doctor_name"] = parsed.get("doctor_name", "") or state.get("doctor_name", "")
+        state["patient_name"] = ""
+        state["appointment_date"] = ""
+        state["appointment_time"] = ""
+        state["available_slots"] = []
+
+    # --------------------------------------------------------
     # Appointment request. Preserve previous entities only when
     # the conversation is already in an active booking workflow.
     # A new booking request starts cleanly.
@@ -352,10 +375,13 @@ def route_request(
         "",
     )
 
-    # Explicit doctor search always wins over a stale booking
-    # status. This is the key fix for the previous screenshot.
+    # Explicit lookup requests always win over a stale booking
+    # status.
     if intent == "doctor_search":
         return "search_doctors"
+
+    if intent == "availability_dates":
+        return "availability_dates"
 
     # Continue an active appointment conversation.
     if status in ACTIVE_APPOINTMENT_STATES:
@@ -441,6 +467,93 @@ def search_doctors_node(
         state,
         "search_doctors",
         "Doctor search completed",
+    )
+
+    return state
+
+
+# ============================================================
+# Doctor Available Dates
+# ============================================================
+
+def availability_dates_node(
+    state: SchedulingState,
+) -> SchedulingState:
+
+    doctor_name = state.get(
+        "doctor_name",
+        "",
+    )
+
+    if not doctor_name:
+
+        state["status"] = "waiting_for_doctor"
+        state["response"] = (
+            "Which doctor would you like to "
+            "check availability for?"
+        )
+
+        add_trace(
+            state,
+            "availability_dates",
+            "Waiting for doctor",
+        )
+
+        return state
+
+    result = get_available_dates.invoke(
+        {
+            "doctor_name": doctor_name,
+        }
+    )
+
+    try:
+        parsed = json.loads(result)
+    except Exception:
+        state["status"] = "availability_error"
+        state["response"] = str(result)
+        return state
+
+    if parsed.get("status") != "success":
+        state["status"] = "availability_error"
+        state["response"] = parsed.get(
+            "message",
+            "Unable to check doctor availability.",
+        )
+        add_trace(
+            state,
+            "availability_dates",
+            "Doctor lookup failed",
+        )
+        return state
+
+    available_dates = parsed.get(
+        "available_dates",
+        [],
+    )
+
+    state["available_slots"] = []
+
+    if not available_dates:
+        state["status"] = "availability_dates_completed"
+        state["response"] = (
+            f"No available dates were found for "
+            f"{parsed.get('doctor', doctor_name)}."
+        )
+    else:
+        state["status"] = "availability_dates_completed"
+        state["response"] = (
+            f"{parsed.get('doctor', doctor_name)} is available on:\n\n"
+            + "\n".join(
+                f"• {available_date}"
+                for available_date in available_dates
+            )
+        )
+
+    add_trace(
+        state,
+        "availability_dates",
+        f"Found {len(available_dates)} available date(s)",
     )
 
     return state
@@ -923,6 +1036,11 @@ def build_graph():
     )
 
     workflow.add_node(
+        "availability_dates",
+        availability_dates_node,
+    )
+
+    workflow.add_node(
         "check_availability",
         check_availability_node,
     )
@@ -957,6 +1075,9 @@ def build_graph():
             "search_doctors":
                 "search_doctors",
 
+            "availability_dates":
+                "availability_dates",
+
             "check_availability":
                 "check_availability",
 
@@ -971,6 +1092,11 @@ def build_graph():
 
     workflow.add_edge(
         "search_doctors",
+        END,
+    )
+
+    workflow.add_edge(
+        "availability_dates",
         END,
     )
 
