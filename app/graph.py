@@ -1,5 +1,6 @@
 import json
-from datetime import datetime
+import re
+from datetime import date, datetime
 
 from app.checkpointer import checkpointer
 from langgraph.graph import END, START, StateGraph
@@ -31,6 +32,83 @@ ACTIVE_APPOINTMENT_STATES = {
     "availability_checked",
     "availability_error",
 }
+
+
+def _extract_date_from_text(text: str) -> str:
+    """Extract a common conversational date phrase from free text."""
+    if not text:
+        return ""
+
+    patterns = (
+        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b",
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?\b",
+        r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)(?:\s+\d{4})?\b",
+        r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?(?:\s+\d{4})?\b",
+    )
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(0)
+
+    return ""
+
+
+def _normalize_natural_date(value: str) -> str:
+    """Convert common natural-language dates to YYYY-MM-DD.
+
+    The LLM is still responsible for entity extraction, but dates
+    are normalized deterministically so phrases such as
+    "October 10th", "Oct 10", and "10 October" do not
+    get lost when the model returns the original wording.
+    """
+    if not value:
+        return ""
+
+    value = str(value).strip()
+
+    # Already normalized.
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        pass
+
+    cleaned = re.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", value, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[,]+", " ", cleaned)
+    cleaned = " ".join(cleaned.split())
+
+    formats = (
+        "%B %d %Y",
+        "%B %d",
+        "%b %d %Y",
+        "%b %d",
+        "%d %B %Y",
+        "%d %B",
+        "%d %b %Y",
+        "%d %b",
+    )
+
+    parsed = None
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(cleaned, fmt)
+            break
+        except ValueError:
+            continue
+
+    if parsed is None:
+        return value
+
+    if "%Y" not in fmt:
+        parsed = parsed.replace(year=date.today().year)
+
+        # For a date without a year that has already passed, prefer
+        # the next occurrence. This is useful for conversational
+        # booking requests such as "January 5th".
+        if parsed.date() < date.today():
+            parsed = parsed.replace(year=parsed.year + 1)
+
+    return parsed.date().isoformat()
 
 
 # ============================================================
@@ -121,9 +199,13 @@ Rules:
 
 5. Do not invent missing information.
 
-6. Date format: YYYY-MM-DD
+6. Date format: YYYY-MM-DD. Convert natural-language dates
+   such as "October 10th", "Oct 10", "10 October",
+   and "October 10, 2026" into YYYY-MM-DD. If a year is not
+   provided, use the current year.
 
-7. Time format: HH:MM
+7. Time format: HH:MM. Convert natural-language times when
+   unambiguous, such as "2 PM" -> "14:00".
 
 8. Return empty strings for fields not present in the current
    user message.
@@ -156,9 +238,33 @@ Rules:
             "appointment_time": "",
         }
 
+    # Normalize dates deterministically after extraction. This makes
+    # the workflow robust to LLM outputs such as "October 10th".
+    raw_date = parsed.get("appointment_date", "")
+
+    if raw_date:
+        parsed["appointment_date"] = _normalize_natural_date(
+            raw_date
+        )
+    else:
+        # Some model responses may leave appointment_date empty even
+        # when the current message clearly contains a natural date.
+        # Recover it directly from the user's message.
+        extracted_date = _extract_date_from_text(query)
+        if extracted_date:
+            parsed["appointment_date"] = _normalize_natural_date(
+                extracted_date
+            )
+
     parsed_intent = parsed.get("intent", "")
     existing_status = state.get("status", "")
     active_appointment = existing_status in ACTIVE_APPOINTMENT_STATES
+
+    # An active booking workflow should continue for follow-up
+    # messages unless the user explicitly starts a doctor search.
+    if active_appointment and parsed_intent != "doctor_search":
+        parsed_intent = "appointment_booking"
+        parsed["intent"] = parsed_intent
 
     # --------------------------------------------------------
     # Explicit doctor search starts a search context.
