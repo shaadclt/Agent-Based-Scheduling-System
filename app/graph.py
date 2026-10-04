@@ -20,6 +20,19 @@ from app.tools import (
 llm = setup_llm()
 
 
+# Active appointment states are the states in which a follow-up
+# message such as a date, time, or patient name should continue
+# the existing booking workflow.
+ACTIVE_APPOINTMENT_STATES = {
+    "waiting_for_doctor",
+    "waiting_for_date",
+    "waiting_for_time",
+    "waiting_for_patient_name",
+    "availability_checked",
+    "availability_error",
+}
+
+
 # ============================================================
 # Trace
 # ============================================================
@@ -60,14 +73,8 @@ def analyze_request(
         "doctor_name": state.get("doctor_name", ""),
         "specialty": state.get("specialty", ""),
         "patient_name": state.get("patient_name", ""),
-        "appointment_date": state.get(
-            "appointment_date",
-            "",
-        ),
-        "appointment_time": state.get(
-            "appointment_time",
-            "",
-        ),
+        "appointment_date": state.get("appointment_date", ""),
+        "appointment_time": state.get("appointment_time", ""),
     }
 
     prompt = f"""
@@ -82,7 +89,7 @@ New user message:
 
 {query}
 
-Extract information from ONLY the new user message.
+Classify the CURRENT user message first.
 
 Return ONLY valid JSON:
 
@@ -97,68 +104,49 @@ Return ONLY valid JSON:
 
 Rules:
 
-1. A request to find a doctor is doctor_search.
+1. A request to find, list, browse, or search for doctors is
+   doctor_search.
 
 2. A request to book or schedule an appointment is
    appointment_booking.
 
-3. If the current workflow is already an appointment workflow,
+3. If the current workflow is an active appointment workflow,
    a follow-up containing only a date, time, or patient name
    must be appointment_booking.
 
-4. Do not invent missing information.
+4. An explicit doctor-search request takes priority over an
+   older appointment workflow. For example, if the old state
+   is waiting_for_time and the user says "Can you list the
+   doctors available?", classify it as doctor_search.
 
-5. Date format:
-   YYYY-MM-DD
+5. Do not invent missing information.
 
-6. Time format:
-   HH:MM
+6. Date format: YYYY-MM-DD
 
-7. If the user says "14:00", extract:
-   appointment_time = "14:00"
+7. Time format: HH:MM
 
-8. If the user says "2026-10-01", extract:
-   appointment_date = "2026-10-01"
-
-9. If the user provides a person's name in response to a
-   patient-name request, extract it as patient_name.
-
-10. Return empty strings for fields not present in the
-    current user message.
+8. Return empty strings for fields not present in the current
+   user message.
 """
 
     try:
-
         response = llm.invoke(prompt)
 
         content = response.content
 
         if isinstance(content, list):
-            content = "".join(
-                str(item)
-                for item in content
-            )
+            content = "".join(str(item) for item in content)
 
         content = str(content).strip()
 
         if content.startswith("```"):
-
-            content = content.replace(
-                "```json",
-                "",
-            )
-
-            content = content.replace(
-                "```",
-                "",
-            )
-
+            content = content.replace("```json", "", 1)
+            content = content.replace("```", "")
             content = content.strip()
 
         parsed = json.loads(content)
 
     except Exception:
-
         parsed = {
             "intent": "",
             "specialty": "",
@@ -168,59 +156,67 @@ Rules:
             "appointment_time": "",
         }
 
-    # --------------------------------------------------------
-    # Update only fields explicitly extracted
-    # --------------------------------------------------------
-
-    if parsed.get("intent"):
-        state["intent"] = parsed["intent"]
-
-    if parsed.get("specialty"):
-        state["specialty"] = parsed["specialty"]
-
-    if parsed.get("doctor_name"):
-        state["doctor_name"] = parsed["doctor_name"]
-
-    if parsed.get("patient_name"):
-        state["patient_name"] = parsed["patient_name"]
-
-    if parsed.get("appointment_date"):
-        state["appointment_date"] = parsed[
-            "appointment_date"
-        ]
-
-    if parsed.get("appointment_time"):
-        state["appointment_time"] = parsed[
-            "appointment_time"
-        ]
+    parsed_intent = parsed.get("intent", "")
+    existing_status = state.get("status", "")
+    active_appointment = existing_status in ACTIVE_APPOINTMENT_STATES
 
     # --------------------------------------------------------
-    # Existing appointment workflow has priority
+    # Explicit doctor search starts a search context.
+    # Clear old booking-specific entities so an old appointment
+    # cannot leak into the new request.
     # --------------------------------------------------------
+    if parsed_intent == "doctor_search":
+        state["intent"] = "doctor_search"
+        state["specialty"] = parsed.get("specialty", "") or ""
+        state["doctor_name"] = parsed.get("doctor_name", "") or ""
+        state["patient_name"] = ""
+        state["appointment_date"] = ""
+        state["appointment_time"] = ""
+        state["available_slots"] = []
 
-    existing_status = state.get(
-        "status",
-        "",
-    )
-
-    appointment_states = {
-        "waiting_for_doctor",
-        "waiting_for_date",
-        "waiting_for_time",
-        "waiting_for_patient_name",
-        "availability_checked",
-        "availability_error",
-    }
-
-    if existing_status in appointment_states:
+    # --------------------------------------------------------
+    # Appointment request. Preserve previous entities only when
+    # the conversation is already in an active booking workflow.
+    # A new booking request starts cleanly.
+    # --------------------------------------------------------
+    elif parsed_intent == "appointment_booking":
+        if not active_appointment:
+            state["doctor_name"] = ""
+            state["specialty"] = ""
+            state["patient_name"] = ""
+            state["appointment_date"] = ""
+            state["appointment_time"] = ""
+            state["available_slots"] = []
 
         state["intent"] = "appointment_booking"
 
-    elif (
-        state.get("doctor_name")
-        and state.get("appointment_date")
-    ):
+        if parsed.get("specialty"):
+            state["specialty"] = parsed["specialty"]
 
+        if parsed.get("doctor_name"):
+            state["doctor_name"] = parsed["doctor_name"]
+
+        if parsed.get("patient_name"):
+            state["patient_name"] = parsed["patient_name"]
+
+        if parsed.get("appointment_date"):
+            state["appointment_date"] = parsed["appointment_date"]
+
+        if parsed.get("appointment_time"):
+            state["appointment_time"] = parsed["appointment_time"]
+
+    # --------------------------------------------------------
+    # General request. Do not allow an old appointment context
+    # to control an unrelated request.
+    # --------------------------------------------------------
+    elif parsed_intent == "general":
+        state["intent"] = "general"
+
+    # --------------------------------------------------------
+    # If the LLM failed to classify the message but the workflow
+    # is active, retain the appointment context.
+    # --------------------------------------------------------
+    elif active_appointment:
         state["intent"] = "appointment_booking"
 
     add_trace(
@@ -240,37 +236,24 @@ def route_request(
     state: SchedulingState,
 ):
 
-    status = state.get(
-        "status",
-        "",
-    )
-
     intent = state.get(
         "intent",
         "general",
     )
 
-    # --------------------------------------------------------
-    # Continue existing scheduling workflow
-    # --------------------------------------------------------
+    status = state.get(
+        "status",
+        "",
+    )
 
-    if status in {
-        "waiting_for_doctor",
-        "waiting_for_date",
-        "waiting_for_time",
-        "waiting_for_patient_name",
-        "availability_checked",
-        "availability_error",
-    }:
-
-        return "check_availability"
-
-    # --------------------------------------------------------
-    # New request
-    # --------------------------------------------------------
-
+    # Explicit doctor search always wins over a stale booking
+    # status. This is the key fix for the previous screenshot.
     if intent == "doctor_search":
         return "search_doctors"
+
+    # Continue an active appointment conversation.
+    if status in ACTIVE_APPOINTMENT_STATES:
+        return "check_availability"
 
     if intent == "appointment_booking":
         return "check_availability"
@@ -296,73 +279,57 @@ def search_doctors_node(
         "",
     )
 
-    query = state.get(
-        "query",
-        "",
-    )
-
-    search_query = doctor_name or query
-
+    # The tool returns all doctors when both values are empty.
+    # Do not pass the natural-language request such as
+    # "Can you list the doctors available?" as a name query.
     result = search_doctors.invoke(
         {
             "specialty": specialty,
-            "query": search_query,
+            "query": doctor_name,
         }
     )
 
     state["doctor_results"] = result
 
     try:
-
         parsed = json.loads(result)
 
         if parsed.get("status") == "success":
-
             doctors = parsed.get(
                 "doctors",
                 [],
             )
 
-            # If exactly one doctor matches,
-            # retain that doctor in the workflow.
-            if len(doctors) == 1:
-
-                state["doctor_name"] = doctors[0].get(
-                    "name",
-                    "",
+            if specialty:
+                heading = (
+                    f"Doctors available for {specialty}:"
+                )
+            else:
+                heading = (
+                    "Here are the doctors currently available:"
                 )
 
-            lines = [
-                "I found the following doctor(s):",
-                "",
-            ]
+            lines = [heading, ""]
 
             for doctor in doctors:
-
                 lines.append(
                     f"• {doctor.get('name')} — "
                     f"{doctor.get('specialty')} "
                     f"({doctor.get('experience')} years experience)"
                 )
 
-            state["response"] = "\n".join(
-                lines
-            )
+            state["response"] = "\n".join(lines)
 
         else:
-
             state["response"] = parsed.get(
                 "message",
                 "No doctors were found.",
             )
 
     except Exception:
-
         state["response"] = str(result)
 
-    state["status"] = (
-        "doctor_search_completed"
-    )
+    state["status"] = "doctor_search_completed"
 
     add_trace(
         state,
