@@ -14,14 +14,14 @@ from app.tools import (
 
 
 # ============================================================
-# Model
+# LLM
 # ============================================================
 
 llm = setup_llm()
 
 
 # ============================================================
-# Trace Helper
+# Trace
 # ============================================================
 
 def add_trace(
@@ -29,10 +29,6 @@ def add_trace(
     node: str,
     details: str = "",
 ):
-    """
-    Add a simple execution trace entry.
-    """
-
     trace = state.get("trace", [])
 
     trace.append(
@@ -49,7 +45,7 @@ def add_trace(
 
 
 # ============================================================
-# Request Analysis
+# Analyze Request
 # ============================================================
 
 def analyze_request(
@@ -58,43 +54,37 @@ def analyze_request(
 
     query = state.get("query", "").strip()
 
-    # --------------------------------------------------------
-    # Preserve existing state
-    # --------------------------------------------------------
-
-    existing_doctor = state.get("doctor_name", "")
-    existing_date = state.get("appointment_date", "")
-    existing_time = state.get("appointment_time", "")
-    existing_patient = state.get("patient_name", "")
-
-    # --------------------------------------------------------
-    # Build context for LLM
-    # --------------------------------------------------------
-
-    context = {
-        "existing_doctor": existing_doctor,
-        "existing_date": existing_date,
-        "existing_time": existing_time,
-        "existing_patient": existing_patient,
+    current_state = {
+        "status": state.get("status", ""),
+        "intent": state.get("intent", ""),
+        "doctor_name": state.get("doctor_name", ""),
+        "specialty": state.get("specialty", ""),
+        "patient_name": state.get("patient_name", ""),
+        "appointment_date": state.get(
+            "appointment_date",
+            "",
+        ),
+        "appointment_time": state.get(
+            "appointment_time",
+            "",
+        ),
     }
 
     prompt = f"""
 You are the intent extraction component of a healthcare
 appointment scheduling system.
 
-Current conversation state:
+Current workflow state:
 
-{json.dumps(context, indent=2)}
+{json.dumps(current_state, indent=2)}
 
 New user message:
 
 {query}
 
-Extract the information from the user's message.
+Extract information from ONLY the new user message.
 
-Return ONLY valid JSON.
-
-Use exactly this structure:
+Return ONLY valid JSON:
 
 {{
     "intent": "doctor_search | appointment_booking | general",
@@ -107,18 +97,34 @@ Use exactly this structure:
 
 Rules:
 
-1. If the user is searching for a doctor, use doctor_search.
-2. If the user wants to book or schedule an appointment,
-   use appointment_booking.
-3. If the user provides only a date, time, doctor name,
-   or patient name as a follow-up to an existing appointment
-   conversation, use appointment_booking.
-4. Dates must use YYYY-MM-DD when the date is unambiguous.
-5. Times must use HH:MM in 24-hour format.
-6. Do not invent missing information.
-7. Preserve existing information conceptually, but only
-   extract information explicitly available from the current
-   message.
+1. A request to find a doctor is doctor_search.
+
+2. A request to book or schedule an appointment is
+   appointment_booking.
+
+3. If the current workflow is already an appointment workflow,
+   a follow-up containing only a date, time, or patient name
+   must be appointment_booking.
+
+4. Do not invent missing information.
+
+5. Date format:
+   YYYY-MM-DD
+
+6. Time format:
+   HH:MM
+
+7. If the user says "14:00", extract:
+   appointment_time = "14:00"
+
+8. If the user says "2026-10-01", extract:
+   appointment_date = "2026-10-01"
+
+9. If the user provides a person's name in response to a
+   patient-name request, extract it as patient_name.
+
+10. Return empty strings for fields not present in the
+    current user message.
 """
 
     try:
@@ -126,10 +132,6 @@ Rules:
         response = llm.invoke(prompt)
 
         content = response.content
-
-        # ----------------------------------------------------
-        # Extract JSON
-        # ----------------------------------------------------
 
         if isinstance(content, list):
             content = "".join(
@@ -139,10 +141,18 @@ Rules:
 
         content = str(content).strip()
 
-        # Remove markdown fences if model adds them
         if content.startswith("```"):
-            content = content.replace("```json", "")
-            content = content.replace("```", "")
+
+            content = content.replace(
+                "```json",
+                "",
+            )
+
+            content = content.replace(
+                "```",
+                "",
+            )
+
             content = content.strip()
 
         parsed = json.loads(content)
@@ -150,7 +160,7 @@ Rules:
     except Exception:
 
         parsed = {
-            "intent": "general",
+            "intent": "",
             "specialty": "",
             "doctor_name": "",
             "patient_name": "",
@@ -159,7 +169,7 @@ Rules:
         }
 
     # --------------------------------------------------------
-    # Update state only when information exists
+    # Update only fields explicitly extracted
     # --------------------------------------------------------
 
     if parsed.get("intent"):
@@ -175,21 +185,42 @@ Rules:
         state["patient_name"] = parsed["patient_name"]
 
     if parsed.get("appointment_date"):
-        state["appointment_date"] = parsed["appointment_date"]
+        state["appointment_date"] = parsed[
+            "appointment_date"
+        ]
 
     if parsed.get("appointment_time"):
-        state["appointment_time"] = parsed["appointment_time"]
+        state["appointment_time"] = parsed[
+            "appointment_time"
+        ]
 
     # --------------------------------------------------------
-    # Detect follow-up messages
+    # Existing appointment workflow has priority
     # --------------------------------------------------------
 
-    if (
-        existing_doctor
-        or existing_date
-        or existing_time
-        or existing_patient
+    existing_status = state.get(
+        "status",
+        "",
+    )
+
+    appointment_states = {
+        "waiting_for_doctor",
+        "waiting_for_date",
+        "waiting_for_time",
+        "waiting_for_patient_name",
+        "availability_checked",
+        "availability_error",
+    }
+
+    if existing_status in appointment_states:
+
+        state["intent"] = "appointment_booking"
+
+    elif (
+        state.get("doctor_name")
+        and state.get("appointment_date")
     ):
+
         state["intent"] = "appointment_booking"
 
     add_trace(
@@ -202,21 +233,41 @@ Rules:
 
 
 # ============================================================
-# Routing
+# Router
 # ============================================================
 
-def route_request(state: SchedulingState):
+def route_request(
+    state: SchedulingState,
+):
 
-    intent = state.get("intent", "general")
+    status = state.get(
+        "status",
+        "",
+    )
 
-    # Existing appointment workflow takes priority
-    if (
-        state.get("doctor_name")
-        or state.get("appointment_date")
-        or state.get("appointment_time")
-    ):
-        if intent == "appointment_booking":
-            return "check_availability"
+    intent = state.get(
+        "intent",
+        "general",
+    )
+
+    # --------------------------------------------------------
+    # Continue existing scheduling workflow
+    # --------------------------------------------------------
+
+    if status in {
+        "waiting_for_doctor",
+        "waiting_for_date",
+        "waiting_for_time",
+        "waiting_for_patient_name",
+        "availability_checked",
+        "availability_error",
+    }:
+
+        return "check_availability"
+
+    # --------------------------------------------------------
+    # New request
+    # --------------------------------------------------------
 
     if intent == "doctor_search":
         return "search_doctors"
@@ -235,11 +286,21 @@ def search_doctors_node(
     state: SchedulingState,
 ) -> SchedulingState:
 
-    specialty = state.get("specialty", "")
-    doctor_name = state.get("doctor_name", "")
-    query = state.get("query", "")
+    specialty = state.get(
+        "specialty",
+        "",
+    )
 
-    # Prefer extracted doctor/specialty information
+    doctor_name = state.get(
+        "doctor_name",
+        "",
+    )
+
+    query = state.get(
+        "query",
+        "",
+    )
+
     search_query = doctor_name or query
 
     result = search_doctors.invoke(
@@ -252,35 +313,24 @@ def search_doctors_node(
     state["doctor_results"] = result
 
     try:
+
         parsed = json.loads(result)
 
         if parsed.get("status") == "success":
 
-            doctors = parsed.get("doctors", [])
+            doctors = parsed.get(
+                "doctors",
+                [],
+            )
 
+            # If exactly one doctor matches,
+            # retain that doctor in the workflow.
             if len(doctors) == 1:
 
-                doctor = doctors[0]
-
-                state["doctor_name"] = doctor.get(
+                state["doctor_name"] = doctors[0].get(
                     "name",
                     "",
                 )
-
-    except Exception:
-        pass
-
-    # --------------------------------------------------------
-    # Build response
-    # --------------------------------------------------------
-
-    try:
-
-        parsed = json.loads(result)
-
-        if parsed.get("status") == "success":
-
-            doctors = parsed.get("doctors", [])
 
             lines = [
                 "I found the following doctor(s):",
@@ -295,7 +345,9 @@ def search_doctors_node(
                     f"({doctor.get('experience')} years experience)"
                 )
 
-            state["response"] = "\n".join(lines)
+            state["response"] = "\n".join(
+                lines
+            )
 
         else:
 
@@ -308,7 +360,9 @@ def search_doctors_node(
 
         state["response"] = str(result)
 
-    state["status"] = "doctor_search_completed"
+    state["status"] = (
+        "doctor_search_completed"
+    )
 
     add_trace(
         state,
@@ -320,63 +374,82 @@ def search_doctors_node(
 
 
 # ============================================================
-# Availability
+# Availability / Scheduling
 # ============================================================
 
 def check_availability_node(
     state: SchedulingState,
 ) -> SchedulingState:
 
-    doctor_name = state.get("doctor_name", "")
+    doctor_name = state.get(
+        "doctor_name",
+        "",
+    )
+
     appointment_date = state.get(
         "appointment_date",
         "",
     )
 
+    appointment_time = state.get(
+        "appointment_time",
+        "",
+    )
+
     # --------------------------------------------------------
-    # Need doctor
+    # Doctor missing
     # --------------------------------------------------------
 
     if not doctor_name:
 
-        state["status"] = "waiting_for_doctor"
+        state["status"] = (
+            "waiting_for_doctor"
+        )
 
         state["response"] = (
-            "Which doctor would you like to book "
-            "an appointment with?"
+            "Which doctor would you like "
+            "to book an appointment with?"
         )
 
         add_trace(
             state,
             "check_availability",
-            "Missing doctor",
+            "Waiting for doctor",
         )
 
         return state
 
     # --------------------------------------------------------
-    # Need date
+    # Date missing
     # --------------------------------------------------------
 
     if not appointment_date:
 
-        state["status"] = "waiting_for_date"
+        state["status"] = (
+            "waiting_for_date"
+        )
+
+        clean_name = (
+            doctor_name
+            .replace("Dr. ", "")
+            .replace("Dr ", "")
+        )
 
         state["response"] = (
             f"What date would you like to see "
-            f"{doctor_name.replace('Dr. ', '')}?"
+            f"{clean_name}?"
         )
 
         add_trace(
             state,
             "check_availability",
-            "Missing appointment date",
+            "Waiting for appointment date",
         )
 
         return state
 
     # --------------------------------------------------------
-    # Check availability
+    # Check SQLite availability
     # --------------------------------------------------------
 
     result = check_availability.invoke(
@@ -394,19 +467,24 @@ def check_availability_node(
 
     except Exception:
 
+        state["status"] = (
+            "availability_error"
+        )
+
         state["response"] = str(result)
-        state["status"] = "availability_checked"
 
         return state
 
     if parsed.get("status") != "success":
 
+        state["status"] = (
+            "availability_error"
+        )
+
         state["response"] = parsed.get(
             "message",
             "Unable to check availability.",
         )
-
-        state["status"] = "availability_error"
 
         return state
 
@@ -415,30 +493,74 @@ def check_availability_node(
         [],
     )
 
-    state["available_slots"] = available_slots
-
-    # --------------------------------------------------------
-    # If user already supplied a time
-    # --------------------------------------------------------
-
-    appointment_time = state.get(
-        "appointment_time",
-        "",
+    state["available_slots"] = (
+        available_slots
     )
+
+    # --------------------------------------------------------
+    # No slots
+    # --------------------------------------------------------
+
+    if not available_slots:
+
+        state["status"] = (
+            "availability_checked"
+        )
+
+        state["response"] = (
+            f"No appointment slots are available "
+            f"for {doctor_name} on "
+            f"{appointment_date}."
+        )
+
+        return state
+
+    # --------------------------------------------------------
+    # User already selected a time
+    # --------------------------------------------------------
 
     if appointment_time:
 
         if appointment_time in available_slots:
 
-            return book_appointment_node(state)
+            # Continue to patient name
+            if not state.get(
+                "patient_name",
+                "",
+            ):
 
-        state["status"] = "waiting_for_time"
+                state["status"] = (
+                    "waiting_for_patient_name"
+                )
+
+                state["response"] = (
+                    "May I have the patient's name?"
+                )
+
+                add_trace(
+                    state,
+                    "check_availability",
+                    "Time available; waiting for patient",
+                )
+
+                return state
+
+            # Patient already known -> book
+            return book_appointment_node(
+                state
+            )
+
+        state["status"] = (
+            "waiting_for_time"
+        )
 
         state["response"] = (
             f"{appointment_time} is not available.\n\n"
-            f"Available times for {doctor_name} on "
-            f"{appointment_date} are:\n"
-            + "\n".join(
+            f"Available times for "
+            f"{doctor_name} on "
+            f"{appointment_date} are:\n\n"
+            +
+            "\n".join(
                 f"• {slot}"
                 for slot in available_slots
             )
@@ -453,19 +575,24 @@ def check_availability_node(
         return state
 
     # --------------------------------------------------------
-    # Ask user to select time
+    # Ask for time
     # --------------------------------------------------------
 
-    state["status"] = "waiting_for_time"
+    state["status"] = (
+        "waiting_for_time"
+    )
 
     state["response"] = (
-        f"Available times for {doctor_name} on "
+        f"Available times for "
+        f"{doctor_name} on "
         f"{appointment_date} are:\n\n"
-        + "\n".join(
+        +
+        "\n".join(
             f"• {slot}"
             for slot in available_slots
         )
-        + "\n\nWhich time would you prefer?"
+        +
+        "\n\nWhich time would you prefer?"
     )
 
     add_trace(
@@ -485,91 +612,83 @@ def book_appointment_node(
     state: SchedulingState,
 ) -> SchedulingState:
 
-    doctor_name = state.get("doctor_name", "")
-    patient_name = state.get("patient_name", "")
+    doctor_name = state.get(
+        "doctor_name",
+        "",
+    )
+
+    patient_name = state.get(
+        "patient_name",
+        "",
+    )
+
     appointment_date = state.get(
         "appointment_date",
         "",
     )
+
     appointment_time = state.get(
         "appointment_time",
         "",
     )
 
     # --------------------------------------------------------
-    # Patient name
+    # Required information
     # --------------------------------------------------------
+
+    if not doctor_name:
+
+        state["status"] = (
+            "waiting_for_doctor"
+        )
+
+        state["response"] = (
+            "Which doctor would you like "
+            "to book an appointment with?"
+        )
+
+        return state
+
+    if not appointment_date:
+
+        state["status"] = (
+            "waiting_for_date"
+        )
+
+        state["response"] = (
+            "What date would you like "
+            "the appointment?"
+        )
+
+        return state
+
+    if not appointment_time:
+
+        state["status"] = (
+            "waiting_for_time"
+        )
+
+        state["response"] = (
+            "Which appointment time would "
+            "you prefer?"
+        )
+
+        return state
 
     if not patient_name:
 
-        state["status"] = "waiting_for_patient_name"
+        state["status"] = (
+            "waiting_for_patient_name"
+        )
 
         state["response"] = (
             "May I have the patient's name?"
         )
 
-        add_trace(
-            state,
-            "book_appointment",
-            "Missing patient name",
-        )
-
         return state
 
     # --------------------------------------------------------
-    # Doctor
-    # --------------------------------------------------------
-
-    if not doctor_name:
-
-        state["status"] = "waiting_for_doctor"
-
-        state["response"] = (
-            "Which doctor would you like to book "
-            "an appointment with?"
-        )
-
-        return state
-
-    # --------------------------------------------------------
-    # Date
-    # --------------------------------------------------------
-
-    if not appointment_date:
-
-        state["status"] = "waiting_for_date"
-
-        state["response"] = (
-            "What date would you like the appointment?"
-        )
-
-        return state
-
-    # --------------------------------------------------------
-    # Time
-    # --------------------------------------------------------
-
-    if not appointment_time:
-
-        state["status"] = "waiting_for_time"
-
-        available_slots = state.get(
-            "available_slots",
-            [],
-        )
-
-        state["response"] = (
-            "Please choose an available time:\n\n"
-            + "\n".join(
-                f"• {slot}"
-                for slot in available_slots
-            )
-        )
-
-        return state
-
-    # --------------------------------------------------------
-    # Book
+    # Book through SQLite tool
     # --------------------------------------------------------
 
     result = book_appointment.invoke(
@@ -589,8 +708,11 @@ def book_appointment_node(
 
     except Exception:
 
+        state["status"] = (
+            "booking_error"
+        )
+
         state["response"] = str(result)
-        state["status"] = "booking_completed"
 
         return state
 
@@ -601,20 +723,31 @@ def book_appointment_node(
             {},
         )
 
-        state["status"] = "booking_completed"
+        state["status"] = (
+            "booking_completed"
+        )
 
         state["response"] = (
             "Appointment booked successfully!\n\n"
-            f"Patient: {appointment.get('patient_name')}\n"
-            f"Doctor: {appointment.get('doctor_name')}\n"
-            f"Specialty: {appointment.get('specialty')}\n"
-            f"Date: {appointment.get('date')}\n"
-            f"Time: {appointment.get('time')}"
+            f"Patient: "
+            f"{appointment.get('patient_name')}\n"
+            f"Doctor: "
+            f"{appointment.get('doctor_name')}\n"
+            f"Specialty: "
+            f"{appointment.get('specialty')}\n"
+            f"Date: "
+            f"{appointment.get('date')}\n"
+            f"Time: "
+            f"{appointment.get('time')}\n"
+            f"Status: "
+            f"{appointment.get('status')}"
         )
 
     else:
 
-        state["status"] = "booking_error"
+        state["status"] = (
+            "booking_error"
+        )
 
         state["response"] = parsed.get(
             "message",
@@ -624,7 +757,7 @@ def book_appointment_node(
     add_trace(
         state,
         "book_appointment",
-        "Booking operation completed",
+        "Appointment booking completed",
     )
 
     return state
@@ -638,7 +771,10 @@ def general_response(
     state: SchedulingState,
 ) -> SchedulingState:
 
-    query = state.get("query", "")
+    query = state.get(
+        "query",
+        "",
+    )
 
     prompt = f"""
 You are a healthcare appointment scheduling assistant.
@@ -646,32 +782,39 @@ You are a healthcare appointment scheduling assistant.
 User message:
 {query}
 
-Respond helpfully and concisely.
+You can help with:
 
-You can help users:
-- find doctors
-- identify medical specialties
-- check appointment availability
-- book appointments
+- finding doctors
+- medical specialties
+- checking appointment availability
+- booking appointments
 
-Do not provide medical diagnosis or treatment advice.
+Do not diagnose medical conditions or provide treatment advice.
 
-If the request is unrelated to scheduling or finding doctors,
+If the request is unrelated to scheduling,
 politely explain what you can help with.
 """
 
-    response = llm.invoke(prompt)
+    response = llm.invoke(
+        prompt
+    )
 
     content = response.content
 
     if isinstance(content, list):
+
         content = "".join(
             str(item)
             for item in content
         )
 
-    state["response"] = str(content).strip()
-    state["status"] = "general_response"
+    state["response"] = (
+        str(content).strip()
+    )
+
+    state["status"] = (
+        "general_response"
+    )
 
     add_trace(
         state,
@@ -683,12 +826,14 @@ politely explain what you can help with.
 
 
 # ============================================================
-# Graph Builder
+# Graph
 # ============================================================
 
 def build_graph():
 
-    workflow = StateGraph(SchedulingState)
+    workflow = StateGraph(
+        SchedulingState
+    )
 
     # --------------------------------------------------------
     # Nodes
@@ -729,21 +874,26 @@ def build_graph():
     )
 
     # --------------------------------------------------------
-    # Request routing
+    # Initial routing
     # --------------------------------------------------------
 
     workflow.add_conditional_edges(
         "analyze_request",
         route_request,
         {
-            "search_doctors": "search_doctors",
-            "check_availability": "check_availability",
-            "general_response": "general_response",
+            "search_doctors":
+                "search_doctors",
+
+            "check_availability":
+                "check_availability",
+
+            "general_response":
+                "general_response",
         },
     )
 
     # --------------------------------------------------------
-    # Search -> End
+    # Doctor search
     # --------------------------------------------------------
 
     workflow.add_edge(
@@ -752,7 +902,7 @@ def build_graph():
     )
 
     # --------------------------------------------------------
-    # Availability -> conditional routing
+    # Availability routing
     # --------------------------------------------------------
 
     def availability_router(
@@ -764,23 +914,23 @@ def build_graph():
             "",
         )
 
+        if status == "booking_completed":
+            return "end"
+
+        if status == "waiting_for_patient_name":
+            return "end"
+
+        if status == "waiting_for_time":
+            return "end"
+
         if status == "waiting_for_date":
             return "end"
 
         if status == "waiting_for_doctor":
             return "end"
 
-        if status == "waiting_for_time":
-            return "end"
-
         if status == "availability_error":
             return "end"
-
-        if status == "booking_completed":
-            return "end"
-
-        if state.get("appointment_time"):
-            return "book"
 
         return "end"
 
@@ -788,13 +938,12 @@ def build_graph():
         "check_availability",
         availability_router,
         {
-            "book": "book_appointment",
             "end": END,
         },
     )
 
     # --------------------------------------------------------
-    # Booking -> End
+    # Booking
     # --------------------------------------------------------
 
     workflow.add_edge(
@@ -803,7 +952,7 @@ def build_graph():
     )
 
     # --------------------------------------------------------
-    # General -> End
+    # General
     # --------------------------------------------------------
 
     workflow.add_edge(
