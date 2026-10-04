@@ -277,3 +277,20 @@ async def get_conversation_state(
                 "Unable to retrieve conversation state."
             ),
         ) from exc
+
+
+@app.get("/api/v1/conversations/{thread_id}/debug")
+async def debug_conversation(thread_id: str):
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+        }
+    }
+
+    snapshot = graph.get_state(config)
+
+    return {
+        "thread_id": thread_id,
+        "state": snapshot.values,
+    }
