@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from langgraph.checkpoint.memory import MemorySaver
+from app.checkpointer import checkpointer
 from langgraph.graph import END, START, StateGraph
 
 from app.config import setup_llm
@@ -964,8 +964,6 @@ def build_graph():
     # Checkpointing
     # --------------------------------------------------------
 
-    memory = MemorySaver()
-
     return workflow.compile(
-        checkpointer=memory,
-    )
+    checkpointer=checkpointer,
+)
