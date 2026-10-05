@@ -277,12 +277,23 @@ Examples:
     # because the previous state is waiting_for_date. Detect the
     # explicit availability-date wording before applying the
     # active-booking continuation rule.
+    # Detect date-availability questions deterministically before
+    # allowing the previous appointment state to influence routing.
+    # This covers variations such as:
+    #   - which date is she available?
+    #   - which dates is Dr Emily available?
+    #   - what dates are available?
+    #   - when is Dr Emily available?
+    #   - can you list the available dates?
     availability_date_patterns = (
-        r"\bavailable dates?\b",
+        r"\bavailable\b.*\bdates?\b",
         r"\bdates?\b.*\bavailable\b",
+        r"\bwhich\s+dates?\b",
+        r"\bwhat\s+dates?\b",
+        r"\bwhich\s+date\b.*\bavailable\b",
+        r"\bwhat\s+date\b.*\bavailable\b",
         r"\bwhen\b.*\bavailable\b",
-        r"\bwhich dates?\b",
-        r"\bwhich date\b.*\bavailable\b",
+        r"\bavailable\b.*\bwhen\b",
     )
 
     looks_like_availability_dates = any(
