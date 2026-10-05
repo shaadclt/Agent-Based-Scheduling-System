@@ -355,6 +355,98 @@ Examples:
         parsed["intent"] = parsed_intent
 
     # --------------------------------------------------------
+    # Deterministically infer a specialty for booking requests.
+    #
+    # IMPORTANT: do this even when the LLM populated
+    # doctor_name. Models sometimes interpret words such as
+    # "cardiologist" or "dermatologist" as doctor_name. Those
+    # are specialties, not provider names.
+    #
+    # The actual doctor database is the source of truth for the
+    # specialty vocabulary.
+    # --------------------------------------------------------
+    if parsed_intent == "appointment_booking":
+        try:
+            all_doctors_result = search_doctors.invoke(
+                {
+                    "specialty": "",
+                    "query": "",
+                }
+            )
+
+            all_doctors_data = json.loads(
+                all_doctors_result
+            )
+
+            if all_doctors_data.get("status") == "success":
+                doctors = all_doctors_data.get(
+                    "doctors",
+                    [],
+                )
+
+                query_lower = query.lower()
+                extracted_doctor = str(
+                    parsed.get("doctor_name", "") or ""
+                ).strip().lower()
+
+                for doctor in doctors:
+                    specialty_name = str(
+                        doctor.get("specialty", "")
+                    ).strip()
+
+                    if not specialty_name:
+                        continue
+
+                    specialty_lower = specialty_name.lower()
+
+                    # Common forms: "cardiologist",
+                    # "a cardiologist", "book a cardiologist".
+                    aliases = {
+                        specialty_lower,
+                    }
+
+                    if specialty_lower.endswith("ist"):
+                        aliases.add(
+                            specialty_lower[:-3]
+                        )
+
+                    # Check the complete specialty or its
+                    # natural-language base against the request.
+                    matched = any(
+                        alias
+                        and alias in query_lower
+                        for alias in aliases
+                    )
+
+                    # Also check whether the LLM incorrectly
+                    # placed the specialty word in doctor_name.
+                    extracted_is_specialty = any(
+                        extracted_doctor == alias
+                        or extracted_doctor.endswith(
+                            f" {alias}"
+                        )
+                        for alias in aliases
+                        if alias
+                    )
+
+                    if matched or extracted_is_specialty:
+                        parsed["specialty"] = specialty_name
+
+                        # If the extracted doctor is actually the
+                        # specialty (e.g. "cardiologist"), clear it
+                        # so the next node lists doctors and asks the
+                        # user to explicitly choose one.
+                        if extracted_is_specialty:
+                            parsed["doctor_name"] = ""
+
+                        break
+
+        except Exception:
+            # Specialty inference is a safeguard only. If it
+            # fails, the normal workflow remains unchanged.
+            pass
+
+    # --------------------------------------------------------
     # Explicit doctor search starts a search context.
     # Clear old booking-specific entities so an old appointment
     # cannot leak into the new request.
