@@ -270,51 +270,33 @@ Examples:
     active_appointment = existing_status in ACTIVE_APPOINTMENT_STATES
 
     # --------------------------------------------------------
-    # Deterministic intent safeguards
+    # Deterministic intent routing
     # --------------------------------------------------------
-    # The LLM can occasionally classify a follow-up such as
-    # "Can you list the available dates?" as appointment_booking
-    # because the previous state is waiting_for_date. Detect the
-    # explicit availability-date wording before applying the
-    # active-booking continuation rule.
-    # Detect date-availability questions deterministically before
-    # allowing the previous appointment state to influence routing.
-    # This covers variations such as:
-    #   - which date is she available?
-    #   - which dates is Dr Emily available?
-    #   - what dates are available?
-    #   - when is Dr Emily available?
-    #   - can you list the available dates?
+    # IMPORTANT: explicit user wording must take priority over
+    # the previous LangGraph state. This prevents a message such
+    # as "On which dates is Emily available?" from being treated
+    # as an answer to the previous "What date would you like?"
+    # question.
+
     availability_date_patterns = (
-        r"\bavailable\b.*\bdates?\b",
+        r"\b(?:which|what)\s+dates?\b",
+        r"\b(?:which|what)\s+dates?\b.*\bavailable\b",
+        r"\b(?:which|what)\s+date\b.*\bavailable\b",
         r"\bdates?\b.*\bavailable\b",
-        r"\bwhich\s+dates?\b",
-        r"\bwhat\s+dates?\b",
-        r"\bwhich\s+date\b.*\bavailable\b",
-        r"\bwhat\s+date\b.*\bavailable\b",
+        r"\bavailable\b.*\bdates?\b",
         r"\bwhen\b.*\bavailable\b",
-        r"\bavailable\b.*\bwhen\b",
+        r"\bon\s+which\s+dates?\b",
+        r"\bwhat\s+days?\b.*\bavailable\b",
+        r"\bavailable\b.*\bdays?\b",
+        r"\bwhen\s+can\s+i\s+(?:see|visit)\b",
+        r"\bwhen\s+can\s+i\s+book\b",
     )
 
     looks_like_availability_dates = any(
-        re.search(
-            pattern,
-            query,
-            flags=re.IGNORECASE,
-        )
+        re.search(pattern, query, flags=re.IGNORECASE)
         for pattern in availability_date_patterns
     )
 
-    if looks_like_availability_dates:
-        parsed_intent = "availability_dates"
-        parsed["intent"] = parsed_intent
-
-    # An explicit booking request must override a previous
-    # availability-date lookup. For example, after showing
-    # Emily's available dates, the user may say:
-    # "I want to book on October 3".
-    # That is a booking continuation, not another availability
-    # lookup.
     explicit_booking_patterns = (
         r"\bbook\b",
         r"\bbooking\b",
@@ -324,33 +306,56 @@ Examples:
     )
 
     looks_like_booking_request = any(
-        re.search(
-            pattern,
-            query,
-            flags=re.IGNORECASE,
-        )
+        re.search(pattern, query, flags=re.IGNORECASE)
         for pattern in explicit_booking_patterns
     )
 
-    # A date plus an explicit booking phrase is always a booking
-    # request, even when the previous state was
-    # availability_dates_completed.
-    if looks_like_booking_request:
-        parsed_intent = "appointment_booking"
-        parsed["intent"] = parsed_intent
+    explicit_doctor_search_patterns = (
+        r"\blist\b.*\bdoctors?\b",
+        r"\bshow\b.*\bdoctors?\b",
+        r"\bwhich\s+doctors?\b",
+        r"\bfind\b.*\bdoctors?\b",
+        r"\bdoctors?\b.*\bavailable\b",
+        r"\bavailable\b.*\bdoctors?\b",
+        r"\bwho\b.*\bdoctors?\b",
+    )
 
-    # If the conversation is already performing a doctor
-    # availability-date lookup, a follow-up doctor name such as
-    # "Dr Emily" should continue that lookup rather than starting
-    # an appointment booking workflow.
-    elif state.get("intent") == "availability_dates":
+    looks_like_doctor_search = any(
+        re.search(pattern, query, flags=re.IGNORECASE)
+        for pattern in explicit_doctor_search_patterns
+    )
+
+    # Priority is intentional:
+    #
+    # 1. Availability-date lookup
+    # 2. Explicit booking request
+    # 3. Explicit doctor search
+    # 4. LLM classification
+    # 5. Active appointment continuation
+    #
+    # This makes deterministic workflow transitions reliable even
+    # if the LLM classifies a follow-up incorrectly.
+    if looks_like_availability_dates:
         parsed_intent = "availability_dates"
         parsed["intent"] = parsed_intent
 
-    # An active booking workflow should continue for follow-up
-    # messages, but explicit doctor-search and availability-date
-    # requests always take priority over the old booking state.
+    elif looks_like_booking_request:
+        parsed_intent = "appointment_booking"
+        parsed["intent"] = parsed_intent
+
+    elif looks_like_doctor_search:
+        parsed_intent = "doctor_search"
+        parsed["intent"] = parsed_intent
+
+    elif state.get("intent") == "availability_dates":
+        # A short follow-up such as "Dr Emily" can continue the
+        # availability-date lookup.
+        parsed_intent = "availability_dates"
+        parsed["intent"] = parsed_intent
+
     elif active_appointment:
+        # Only use the previous booking state when the current
+        # message did not explicitly request another workflow.
         parsed_intent = "appointment_booking"
         parsed["intent"] = parsed_intent
 
