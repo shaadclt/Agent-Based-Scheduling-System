@@ -677,22 +677,116 @@ def check_availability_node(
 
     if not doctor_name:
 
-        state["status"] = (
-            "waiting_for_doctor"
-        )
+        # If the user specified a specialty, resolve the doctor
+        # before asking another question. This allows a natural
+        # request such as "I need to book a dermatologist" to
+        # proceed directly when exactly one matching doctor exists.
+        specialty = state.get(
+            "specialty",
+            "",
+        ).strip()
 
-        state["response"] = (
-            "Which doctor would you like "
-            "to book an appointment with?"
-        )
+        if specialty:
 
-        add_trace(
-            state,
-            "check_availability",
-            "Waiting for doctor",
-        )
+            doctor_result = search_doctors.invoke(
+                {
+                    "specialty": specialty,
+                    "query": "",
+                }
+            )
 
-        return state
+            try:
+                doctor_data = json.loads(
+                    doctor_result
+                )
+            except Exception:
+                doctor_data = {}
+
+            if doctor_data.get("status") == "success":
+
+                doctors = doctor_data.get(
+                    "doctors",
+                    [],
+                )
+
+                # Exactly one matching doctor: automatically select
+                # that doctor and continue with the booking workflow.
+                if len(doctors) == 1:
+
+                    doctor_name = doctors[0].get(
+                        "name",
+                        "",
+                    )
+
+                    state["doctor_name"] = doctor_name
+
+                    add_trace(
+                        state,
+                        "check_availability",
+                        (
+                            f"Resolved specialty '{specialty}' "
+                            f"to {doctor_name}"
+                        ),
+                    )
+
+                # Multiple doctors: ask the user to choose instead
+                # of guessing which doctor they want.
+                elif len(doctors) > 1:
+
+                    lines = [
+                        f"I found several {specialty} doctors:",
+                        "",
+                    ]
+
+                    for doctor in doctors:
+                        lines.append(
+                            f"• {doctor.get('name')} — "
+                            f"{doctor.get('specialty')} "
+                            f"({doctor.get('experience')} years experience)"
+                        )
+
+                    lines.extend(
+                        [
+                            "",
+                            "Which doctor would you like to book?",
+                        ]
+                    )
+
+                    state["status"] = (
+                        "waiting_for_doctor"
+                    )
+
+                    state["response"] = "\n".join(lines)
+
+                    add_trace(
+                        state,
+                        "check_availability",
+                        (
+                            f"Multiple doctors found for specialty '{specialty}'"
+                        ),
+                    )
+
+                    return state
+
+        # No specialty match, or no doctor could be resolved.
+        if not doctor_name:
+
+            state["status"] = (
+                "waiting_for_doctor"
+            )
+
+            state["response"] = (
+                "Which doctor would you like "
+                "to book an appointment with?"
+            )
+
+            add_trace(
+                state,
+                "check_availability",
+                "Waiting for doctor",
+            )
+
+            return state
 
     # --------------------------------------------------------
     # Date missing
