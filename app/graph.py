@@ -298,6 +298,36 @@ Examples:
         parsed_intent = "availability_dates"
         parsed["intent"] = parsed_intent
 
+    # An explicit booking request must override a previous
+    # availability-date lookup. For example, after showing
+    # Emily's available dates, the user may say:
+    # "I want to book on October 3".
+    # That is a booking continuation, not another availability
+    # lookup.
+    explicit_booking_patterns = (
+        r"\bbook\b",
+        r"\bbooking\b",
+        r"\bschedule\b",
+        r"\breserve\b",
+        r"\bappointment\b",
+    )
+
+    looks_like_booking_request = any(
+        re.search(
+            pattern,
+            query,
+            flags=re.IGNORECASE,
+        )
+        for pattern in explicit_booking_patterns
+    )
+
+    # A date plus an explicit booking phrase is always a booking
+    # request, even when the previous state was
+    # availability_dates_completed.
+    if looks_like_booking_request:
+        parsed_intent = "appointment_booking"
+        parsed["intent"] = parsed_intent
+
     # If the conversation is already performing a doctor
     # availability-date lookup, a follow-up doctor name such as
     # "Dr Emily" should continue that lookup rather than starting
@@ -347,7 +377,14 @@ Examples:
     # A new booking request starts cleanly.
     # --------------------------------------------------------
     elif parsed_intent == "appointment_booking":
-        if not active_appointment:
+        # A booking request can immediately follow an
+        # availability-date lookup. In that case, preserve the
+        # doctor selected during the lookup even though the
+        # previous status is not an active booking status.
+        previous_intent = state.get("intent", "")
+        previous_doctor = state.get("doctor_name", "")
+
+        if not active_appointment and previous_intent != "availability_dates":
             state["doctor_name"] = ""
             state["specialty"] = ""
             state["patient_name"] = ""
@@ -356,6 +393,9 @@ Examples:
             state["available_slots"] = []
 
         state["intent"] = "appointment_booking"
+
+        if previous_intent == "availability_dates" and previous_doctor:
+            state["doctor_name"] = previous_doctor
 
         if parsed.get("specialty"):
             state["specialty"] = parsed["specialty"]
