@@ -720,32 +720,24 @@ def check_availability_node(
                     [],
                 )
 
-                # Exactly one matching doctor: automatically select
-                # that doctor and continue with the booking workflow.
-                if len(doctors) == 1:
+                # A specialty request should never silently select a
+                # doctor, even when there is only one matching doctor.
+                # The user should see the doctor name and explicitly
+                # choose whom to book. This keeps the workflow clear
+                # and avoids making an implicit provider selection.
+                if doctors:
 
-                    doctor_name = doctors[0].get(
-                        "name",
-                        "",
-                    )
-
-                    state["doctor_name"] = doctor_name
-
-                    add_trace(
-                        state,
-                        "check_availability",
-                        (
-                            f"Resolved specialty '{specialty}' "
-                            f"to {doctor_name}"
-                        ),
-                    )
-
-                # Multiple doctors: ask the user to choose instead
-                # of guessing which doctor they want.
-                elif len(doctors) > 1:
+                    if len(doctors) == 1:
+                        heading = (
+                            f"I found a {specialty} doctor:"
+                        )
+                    else:
+                        heading = (
+                            f"I found these {specialty} doctors:"
+                        )
 
                     lines = [
-                        f"I found several {specialty} doctors:",
+                        heading,
                         "",
                     ]
 
@@ -773,7 +765,8 @@ def check_availability_node(
                         state,
                         "check_availability",
                         (
-                            f"Multiple doctors found for specialty '{specialty}'"
+                            f"Listed {len(doctors)} doctor(s) "
+                            f"for specialty '{specialty}'"
                         ),
                     )
 
