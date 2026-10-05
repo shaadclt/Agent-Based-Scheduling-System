@@ -269,9 +269,47 @@ Examples:
     existing_status = state.get("status", "")
     active_appointment = existing_status in ACTIVE_APPOINTMENT_STATES
 
+    # --------------------------------------------------------
+    # Deterministic intent safeguards
+    # --------------------------------------------------------
+    # The LLM can occasionally classify a follow-up such as
+    # "Can you list the available dates?" as appointment_booking
+    # because the previous state is waiting_for_date. Detect the
+    # explicit availability-date wording before applying the
+    # active-booking continuation rule.
+    availability_date_patterns = (
+        r"\bavailable dates?\b",
+        r"\bdates?\b.*\bavailable\b",
+        r"\bwhen\b.*\bavailable\b",
+        r"\bwhich dates?\b",
+        r"\bwhich date\b.*\bavailable\b",
+    )
+
+    looks_like_availability_dates = any(
+        re.search(
+            pattern,
+            query,
+            flags=re.IGNORECASE,
+        )
+        for pattern in availability_date_patterns
+    )
+
+    if looks_like_availability_dates:
+        parsed_intent = "availability_dates"
+        parsed["intent"] = parsed_intent
+
+    # If the conversation is already performing a doctor
+    # availability-date lookup, a follow-up doctor name such as
+    # "Dr Emily" should continue that lookup rather than starting
+    # an appointment booking workflow.
+    elif state.get("intent") == "availability_dates":
+        parsed_intent = "availability_dates"
+        parsed["intent"] = parsed_intent
+
     # An active booking workflow should continue for follow-up
-    # messages unless the user explicitly starts a doctor search.
-    if active_appointment and parsed_intent != "doctor_search":
+    # messages, but explicit doctor-search and availability-date
+    # requests always take priority over the old booking state.
+    elif active_appointment:
         parsed_intent = "appointment_booking"
         parsed["intent"] = parsed_intent
 
@@ -448,6 +486,17 @@ def search_doctors_node(
                     f"• {doctor.get('name')} — "
                     f"{doctor.get('specialty')} "
                     f"({doctor.get('experience')} years experience)"
+                )
+
+            # If a specialty search returns exactly one doctor,
+            # remember that doctor as the current selection. This
+            # allows a follow-up such as "Which date is available?"
+            # to check that doctor's dates without asking for the
+            # doctor again.
+            if len(doctors) == 1:
+                state["doctor_name"] = doctors[0].get(
+                    "name",
+                    state.get("doctor_name", ""),
                 )
 
             state["response"] = "\n".join(lines)
