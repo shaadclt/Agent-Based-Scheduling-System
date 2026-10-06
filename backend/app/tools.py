@@ -4,8 +4,8 @@ from datetime import datetime
 from langchain_core.tools import tool
 from sqlalchemy.exc import IntegrityError
 
-from app.database import SessionLocal
-from app.models import (
+from backend.app.database import SessionLocal
+from backend.app.models import (
     Appointment,
     Doctor,
     DoctorAvailability,

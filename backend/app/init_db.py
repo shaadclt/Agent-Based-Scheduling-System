@@ -2,8 +2,8 @@ import json
 from datetime import date, time
 from pathlib import Path
 
-from app.database import SessionLocal, init_db
-from app.models import Doctor, DoctorAvailability
+from backend.app.database import SessionLocal, init_db
+from backend.app.models import Doctor, DoctorAvailability
 
 
 # ============================================================

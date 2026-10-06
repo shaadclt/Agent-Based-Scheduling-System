@@ -2,12 +2,12 @@ import json
 import re
 from datetime import date, datetime
 
-from app.checkpointer import checkpointer
+from backend.app.checkpointer import checkpointer
 from langgraph.graph import END, START, StateGraph
 
-from app.config import setup_llm
-from app.state import SchedulingState
-from app.tools import (
+from backend.app.config import setup_llm
+from backend.app.state import SchedulingState
+from backend.app.tools import (
     book_appointment,
     check_availability,
     get_available_dates,

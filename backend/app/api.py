@@ -4,8 +4,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from app.database import init_db
-from app.graph import build_graph
+from backend.app.database import init_db
+from backend.app.graph import build_graph
 
 from fastapi.middleware.cors import CORSMiddleware
 

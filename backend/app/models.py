@@ -14,7 +14,7 @@ from sqlalchemy import (
 
 from sqlalchemy.orm import relationship
 
-from app.database import Base
+from backend.app.database import Base
 
 
 # ============================================================

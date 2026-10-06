@@ -56,7 +56,7 @@ def init_db():
     Create healthcare application tables.
     """
 
-    from app.models import (
+    from backend.app.models import (
         Appointment,
         Doctor,
         DoctorAvailability,
