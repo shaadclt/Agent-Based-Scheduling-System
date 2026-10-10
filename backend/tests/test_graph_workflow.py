@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import app.graph as graph
+import backend.app.graph as graph
 
 
 class FakeLLM:
