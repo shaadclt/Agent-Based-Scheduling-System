@@ -48,9 +48,13 @@ def fake_all_doctors():
 @pytest.fixture
 def patch_llm_and_doctors(monkeypatch):
     monkeypatch.setattr(
-        graph.search_doctors,
-        "invoke",
-        Mock(return_value=fake_all_doctors()),
+    graph,
+    "search_doctors",
+    Mock(
+        invoke=Mock(
+            return_value=fake_all_doctors()
+        )
+    ),
     )
 
 
