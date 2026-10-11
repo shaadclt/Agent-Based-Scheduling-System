@@ -309,3 +309,24 @@ async def debug_conversation(thread_id: str):
         "thread_id": thread_id,
         "state": snapshot.values,
     }
+
+# ============================================================
+# Admin: Doctor JSON Import
+# ============================================================
+
+async def _read_and_validate_doctor_file(file: UploadFile):
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a .json file.",
+        )
+
+    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+
+    result = validate_doctors_json(raw)
+
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="The upload exceeds the 2 MB limit.",
+        )
