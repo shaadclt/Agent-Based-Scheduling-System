@@ -361,14 +361,7 @@ Examples:
 
     # --------------------------------------------------------
     # Deterministically infer a specialty for booking requests.
-    #
-    # IMPORTANT: do this even when the LLM populated
-    # doctor_name. Models sometimes interpret words such as
-    # "cardiologist" or "dermatologist" as doctor_name. Those
-    # are specialties, not provider names.
-    #
-    # The actual doctor database is the source of truth for the
-    # specialty vocabulary.
+    # Match common doctor titles to canonical database specialties.
     # --------------------------------------------------------
     if parsed_intent == "appointment_booking":
         try:
@@ -378,78 +371,112 @@ Examples:
                     "query": "",
                 }
             )
-
-            all_doctors_data = json.loads(
-                all_doctors_result
-            )
+            all_doctors_data = json.loads(all_doctors_result)
 
             if all_doctors_data.get("status") == "success":
-                doctors = all_doctors_data.get(
-                    "doctors",
-                    [],
-                )
-
-                query_lower = query.lower()
+                doctors = all_doctors_data.get("doctors", [])
+                query_lower = query.casefold()
                 extracted_doctor = str(
                     parsed.get("doctor_name", "") or ""
-                ).strip().lower()
+                ).strip().casefold()
 
-                for doctor in doctors:
-                    specialty_name = str(
-                        doctor.get("specialty", "")
-                    ).strip()
+                specialty_aliases = {
+                    "dermatology": {
+                        "dermatology", "dermatologist", "skin specialist"
+                    },
+                    "oncology": {
+                        "oncology", "oncologist", "cancer specialist"
+                    },
+                    "cardiology": {
+                        "cardiology", "cardiologist", "heart specialist"
+                    },
+                    "neurology": {"neurology", "neurologist"},
+                    "pediatrics": {
+                        "pediatrics", "paediatrics", "pediatrician",
+                        "paediatrician", "children's doctor", "child specialist"
+                    },
+                    "orthopedics": {
+                        "orthopedics", "orthopaedics", "orthopedist",
+                        "orthopaedist", "bone specialist"
+                    },
+                    "gynecology": {
+                        "gynecology", "gynaecology", "gynecologist",
+                        "gynaecologist"
+                    },
+                    "ophthalmology": {
+                        "ophthalmology", "ophthalmologist", "eye specialist"
+                    },
+                    "urology": {"urology", "urologist"},
+                    "gastroenterology": {
+                        "gastroenterology", "gastroenterologist"
+                    },
+                    "endocrinology": {"endocrinology", "endocrinologist"},
+                    "psychiatry": {"psychiatry", "psychiatrist"},
+                    "pulmonology": {"pulmonology", "pulmonologist"},
+                    "nephrology": {"nephrology", "nephrologist"},
+                    "rheumatology": {"rheumatology", "rheumatologist"},
+                    "dentistry": {"dentistry", "dentist"},
+                    "general medicine": {
+                        "general medicine", "general physician", "physician"
+                    },
+                }
 
-                    if not specialty_name:
+                # Map normalized database specialty names to their original
+                # spelling, so aliases resolve only to specialties in the DB.
+                available_specialties = {
+                    str(doctor.get("specialty", "")).strip().casefold():
+                    str(doctor.get("specialty", "")).strip()
+                    for doctor in doctors
+                    if str(doctor.get("specialty", "")).strip()
+                }
+
+                matched_specialty = ""
+
+                for canonical, aliases in specialty_aliases.items():
+                    database_specialty = available_specialties.get(
+                        canonical.casefold()
+                    )
+                    if not database_specialty:
                         continue
 
-                    specialty_lower = specialty_name.lower()
-
-                    # Common forms: "cardiologist",
-                    # "a cardiologist", "book a cardiologist".
-                    aliases = {
-                        specialty_lower,
-                    }
-
-                    if specialty_lower.endswith("ist"):
-                        aliases.add(
-                            specialty_lower[:-3]
+                    for alias in aliases:
+                        pattern = (
+                            r"(?<!\w)" + re.escape(alias.casefold()) + r"(?!\w)"
                         )
+                        if re.search(pattern, query_lower) or extracted_doctor == alias.casefold():
+                            matched_specialty = database_specialty
+                            break
 
-                    # Check the complete specialty or its
-                    # natural-language base against the request.
-                    matched = any(
-                        alias
-                        and alias in query_lower
-                        for alias in aliases
-                    )
-
-                    # Also check whether the LLM incorrectly
-                    # placed the specialty word in doctor_name.
-                    extracted_is_specialty = any(
-                        extracted_doctor == alias
-                        or extracted_doctor.endswith(
-                            f" {alias}"
-                        )
-                        for alias in aliases
-                        if alias
-                    )
-
-                    if matched or extracted_is_specialty:
-                        parsed["specialty"] = specialty_name
-
-                        # If the extracted doctor is actually the
-                        # specialty (e.g. "cardiologist"), clear it
-                        # so the next node lists doctors and asks the
-                        # user to explicitly choose one.
-                        if extracted_is_specialty:
-                            parsed["doctor_name"] = ""
-
+                    if matched_specialty:
                         break
 
-        except Exception:
-            # Specialty inference is a safeguard only. If it
-            # fails, the normal workflow remains unchanged.
-            pass
+                # Fallback for exact database specialty names not covered
+                # by the explicit alias dictionary.
+                if not matched_specialty:
+                    for specialty_key, specialty_name in available_specialties.items():
+                        if not specialty_key:
+                            continue
+                        pattern = (
+                            r"(?<!\w)" + re.escape(specialty_key) + r"(?!\w)"
+                        )
+                        if re.search(pattern, query_lower) or extracted_doctor == specialty_key:
+                            matched_specialty = specialty_name
+                            break
+
+                if matched_specialty:
+                    parsed["specialty"] = matched_specialty
+                    # The extracted value may be a title, not a person's name.
+                    all_aliases = {
+                        alias
+                        for aliases in specialty_aliases.values()
+                        for alias in aliases
+                    }
+                    if extracted_doctor in all_aliases or extracted_doctor in available_specialties:
+                        parsed["doctor_name"] = ""
+
+        except Exception as exc:
+            # Specialty inference is a safeguard; do not crash the workflow.
+            print(f"Specialty inference failed: {exc}")
 
     # --------------------------------------------------------
     # Explicit doctor search starts a search context.
@@ -506,7 +533,22 @@ Examples:
             state["doctor_name"] = previous_doctor
 
         if parsed.get("specialty"):
-            state["specialty"] = parsed["specialty"]
+            new_specialty = str(parsed["specialty"]).strip()
+            old_specialty = str(state.get("specialty", "") or "").strip()
+
+            # A change of specialty starts a fresh provider/date/time selection.
+            if (
+                old_specialty
+                and new_specialty
+                and old_specialty.casefold() != new_specialty.casefold()
+            ):
+                state["doctor_name"] = ""
+                state["appointment_date"] = ""
+                state["appointment_time"] = ""
+                state["patient_name"] = ""
+                state["available_slots"] = []
+
+            state["specialty"] = new_specialty
 
         if parsed.get("doctor_name"):
             state["doctor_name"] = parsed["doctor_name"]
