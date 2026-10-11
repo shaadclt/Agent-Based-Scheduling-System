@@ -6,8 +6,9 @@ from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from backend.app.database import init_db
+from backend.app.database import init_db, SessionLocal
 from backend.app.graph import build_graph
+from backend.app.models import Doctor
 from backend.app.doctor_import import (
     MAX_UPLOAD_BYTES,
     validate_doctors_json,
@@ -28,7 +29,7 @@ graph = build_graph()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize application resources on startup."""
+    """Initialize database tables when the application starts."""
     init_db()
     yield
 
@@ -47,12 +48,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-    ],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,9 +68,7 @@ class SchedulingRequest(BaseModel):
         ...,
         min_length=1,
         description="User's scheduling request.",
-        examples=[
-            "I want an appointment with Dr. Michael Brown"
-        ],
+        examples=["I want an appointment with Dr. Michael Brown"],
     )
 
     thread_id: str = Field(
@@ -88,8 +84,6 @@ class SchedulingRequest(BaseModel):
 # ============================================================
 
 class SchedulingResponse(BaseModel):
-    """Response returned by the scheduling agent."""
-
     thread_id: str
     response: str
     status: str
@@ -118,10 +112,7 @@ class ConversationStateResponse(BaseModel):
 # Root
 # ============================================================
 
-@app.get(
-    "/",
-    response_model=HealthResponse,
-)
+@app.get("/", response_model=HealthResponse)
 async def root():
     return {
         "status": "ok",
@@ -134,10 +125,7 @@ async def root():
 # Health Check
 # ============================================================
 
-@app.get(
-    "/health",
-    response_model=HealthResponse,
-)
+@app.get("/health", response_model=HealthResponse)
 async def health():
     return {
         "status": "healthy",
@@ -163,9 +151,7 @@ async def schedule(request: SchedulingRequest):
         }
 
         result = graph.invoke(
-            {
-                "query": request.query,
-            },
+            {"query": request.query},
             config=config,
         )
 
@@ -177,7 +163,6 @@ async def schedule(request: SchedulingRequest):
         )
 
     except Exception as exc:
-        # Keep the detailed exception in the server logs.
         print(f"Scheduling request failed: {exc}")
 
         raise HTTPException(
@@ -205,8 +190,8 @@ async def get_conversation_state(thread_id: str):
             }
         }
 
-        state_snapshot = graph.get_state(config)
-        values = state_snapshot.values
+        snapshot = graph.get_state(config)
+        values = snapshot.values
 
         return ConversationStateResponse(
             thread_id=thread_id,
@@ -221,7 +206,7 @@ async def get_conversation_state(thread_id: str):
         )
 
     except Exception as exc:
-        print(f"Unable to retrieve conversation state: {exc}")
+        print(f"Conversation state retrieval failed: {exc}")
 
         raise HTTPException(
             status_code=500,
@@ -246,7 +231,7 @@ async def debug_conversation(thread_id: str):
         }
 
     except Exception as exc:
-        print(f"Unable to retrieve conversation debug state: {exc}")
+        print(f"Conversation debug retrieval failed: {exc}")
 
         raise HTTPException(
             status_code=500,
@@ -255,29 +240,31 @@ async def debug_conversation(thread_id: str):
 
 
 # ============================================================
-# Admin: Doctor JSON Import Helpers
+# Admin: Doctor JSON Upload and Validation
 # ============================================================
 
 async def _read_and_validate_doctor_file(file: UploadFile):
-    """Read and validate an uploaded doctor JSON file."""
+    """Read and validate an uploaded JSON file without changing the DB."""
 
-    if not file.filename or not file.filename.lower().endswith(".json"):
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload a .json file.",
-        )
+    try:
+        if not file.filename or not file.filename.lower().endswith(".json"):
+            raise HTTPException(
+                status_code=400,
+                detail="Please upload a .json file.",
+            )
 
-    raw = await file.read(MAX_UPLOAD_BYTES + 1)
+        raw = await file.read(MAX_UPLOAD_BYTES + 1)
 
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail="The upload exceeds the 2 MB limit.",
-        )
+        if len(raw) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="The upload exceeds the 2 MB limit.",
+            )
 
-    result = validate_doctors_json(raw)
+        return validate_doctors_json(raw)
 
-    return result
+    finally:
+        await file.close()
 
 
 # ============================================================
@@ -287,8 +274,8 @@ async def _read_and_validate_doctor_file(file: UploadFile):
 @app.post("/api/v1/admin/doctors/preview")
 async def preview_doctors_json(file: UploadFile = File(...)):
     """
-    Validate the uploaded JSON and return a preview.
-    This endpoint does not modify the database.
+    Validate and preview doctor records.
+    Does not modify the database.
     """
 
     result = await _read_and_validate_doctor_file(file)
@@ -310,10 +297,10 @@ async def initialize_doctors_database(
     file: UploadFile = File(...),
 ):
     """
-    Validate and import doctor records into the database.
+    Validate and import doctor records.
 
     Existing matching doctors are updated by the import service.
-    Doctors absent from the uploaded file are not automatically deleted.
+    Records not present in the uploaded file are not automatically deleted.
     """
 
     result = await _read_and_validate_doctor_file(file)
@@ -335,10 +322,7 @@ async def initialize_doctors_database(
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Doctor import failed. Check the backend logs "
-                "for details."
-            ),
+            detail="Doctor import failed. Check the backend logs.",
         ) from exc
 
     return {
@@ -346,3 +330,88 @@ async def initialize_doctors_database(
         "message": "Doctor records imported successfully.",
         **summary,
     }
+
+
+# ============================================================
+# Admin: Doctor Directory
+# ============================================================
+
+@app.get("/api/v1/admin/doctors")
+async def get_doctors():
+    """Return all doctors stored in the database."""
+
+    db = SessionLocal()
+
+    try:
+        doctors = (
+            db.query(Doctor)
+            .order_by(Doctor.name.asc())
+            .all()
+        )
+
+        return {
+            "count": len(doctors),
+            "doctors": [
+                {
+                    "name": doctor.name,
+                    "specialty": doctor.specialty,
+                    "experience": doctor.experience,
+                    "description": doctor.description or "",
+                }
+                for doctor in doctors
+            ],
+        }
+
+    except Exception as exc:
+        print(f"Doctor directory retrieval failed: {exc}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to retrieve the doctor directory.",
+        ) from exc
+
+    finally:
+        db.close()
+
+
+# ============================================================
+# Admin: Doctor Summary
+# ============================================================
+
+@app.get("/api/v1/admin/doctors/summary")
+async def get_doctors_summary():
+    """Return total doctor and specialty counts."""
+
+    db = SessionLocal()
+
+    try:
+        total_doctors = db.query(Doctor).count()
+
+        specialty_rows = (
+            db.query(Doctor.specialty)
+            .distinct()
+            .all()
+        )
+
+        specialties = sorted(
+            specialty
+            for (specialty,) in specialty_rows
+            if specialty
+        )
+
+        return {
+            "total_doctors": total_doctors,
+            "total_specialties": len(specialties),
+            "specialties": specialties,
+        }
+
+    except Exception as exc:
+        print(f"Doctor summary retrieval failed: {exc}")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to retrieve the doctor summary.",
+        ) from exc
+
+    finally:
+        db.close()
