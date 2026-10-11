@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from "react";
 
 import {
@@ -46,6 +47,7 @@ async function requestJson(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, options);
 
   let data = {};
+
   try {
     data = await response.json();
   } catch {
@@ -54,12 +56,16 @@ async function requestJson(path, options = {}) {
 
   if (!response.ok) {
     const detail = data.detail;
+
     const message =
       typeof detail === "string"
         ? detail
         : detail?.message ||
-          (Array.isArray(detail?.errors) ? detail.errors.join("\n") : "") ||
+          (Array.isArray(detail?.errors)
+            ? detail.errors.join("\n")
+            : "") ||
           `Request failed with status ${response.status}.`;
+
     throw new Error(message);
   }
 
@@ -75,7 +81,7 @@ function toFileFormData(file) {
 function App() {
   const [activeView, setActiveView] = useState("chat");
 
-  // Existing scheduling assistant state and behavior.
+  // Existing scheduling assistant state.
   const [threadId, setThreadId] = useState(() => createThreadId());
   const [messages, setMessages] = useState([INITIAL_MESSAGE]);
   const [input, setInput] = useState("");
@@ -95,30 +101,36 @@ function App() {
   const [directoryError, setDirectoryError] = useState("");
 
   // ==========================================================
-  // Start New Conversation (existing functionality)
+  // Start a new conversation
   // ==========================================================
+
   const startNewConversation = () => {
     setThreadId(createThreadId());
     setMessages([INITIAL_MESSAGE]);
     setInput("");
     setLoading(false);
     setStatus("ready");
-    setAppointment(EMPTY_APPOINTMENT);
+    setAppointment({ ...EMPTY_APPOINTMENT });
   };
 
   // ==========================================================
-  // Send Message (existing functionality)
+  // Send a scheduling message
   // ==========================================================
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
     const query = input.trim();
-    if (!query || loading) return;
+
+    if (!query || loading) {
+      return;
+    }
 
     setMessages((previous) => [
       ...previous,
       { role: "user", content: query },
     ]);
+
     setInput("");
     setLoading(true);
 
@@ -129,7 +141,8 @@ function App() {
         ...previous,
         {
           role: "assistant",
-          content: result.response || "I couldn't generate a response.",
+          content:
+            result.response || "I couldn't generate a response.",
         },
       ]);
 
@@ -146,6 +159,7 @@ function App() {
             "Sorry, I couldn't connect to the scheduling service. Please make sure the scheduling service is running.",
         },
       ]);
+
       setStatus("error");
     } finally {
       setLoading(false);
@@ -153,19 +167,28 @@ function App() {
   };
 
   // ==========================================================
-  // Existing appointment-summary parsing
+  // Parse appointment details from the agent trace
   // ==========================================================
+
   const updateAppointmentFromTrace = (items) => {
-    if (!Array.isArray(items) || items.length === 0) return;
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
 
     const analyzeNodes = items.filter(
       (item) => item && item.node === "analyze_request"
     );
-    if (analyzeNodes.length === 0) return;
+
+    if (analyzeNodes.length === 0) {
+      return;
+    }
 
     const latest = analyzeNodes[analyzeNodes.length - 1];
     const parsed = parseTraceDetails(latest.details);
-    if (!parsed) return;
+
+    if (!parsed) {
+      return;
+    }
 
     if (
       parsed.intent === "doctor_search" ||
@@ -178,6 +201,7 @@ function App() {
         time: "",
         patient: "",
       });
+
       return;
     }
 
@@ -193,8 +217,9 @@ function App() {
   };
 
   // ==========================================================
-  // Doctor directory
+  // Load doctor directory and summary
   // ==========================================================
+
   const loadDoctorDirectory = async () => {
     setDirectoryLoading(true);
     setDirectoryError("");
@@ -206,7 +231,12 @@ function App() {
       ]);
 
       setSummary(summaryData);
-      setDoctors(Array.isArray(directoryData.doctors) ? directoryData.doctors : []);
+
+      setDoctors(
+        Array.isArray(directoryData.doctors)
+          ? directoryData.doctors
+          : []
+      );
     } catch (error) {
       console.error("Doctor directory request failed:", error);
       setDirectoryError(error.message);
@@ -222,8 +252,9 @@ function App() {
   }, [activeView]);
 
   // ==========================================================
-  // Upload and validate doctors.json
+  // Handle doctor JSON file selection
   // ==========================================================
+
   const handleFileChange = (event) => {
     const file = event.target.files?.[0] || null;
 
@@ -239,15 +270,21 @@ function App() {
     }
   };
 
+  // ==========================================================
+  // Validate and preview doctor JSON
+  // ==========================================================
+
   const handlePreview = async () => {
     if (!doctorFile) {
       setAdminError("Choose a JSON file first.");
       return;
     }
+
     if (!doctorFile.name.toLowerCase().endsWith(".json")) {
       setAdminError("Please choose a .json file.");
       return;
     }
+
     if (doctorFile.size > 2 * 1024 * 1024) {
       setAdminError("The selected file exceeds the 2 MB limit.");
       return;
@@ -268,6 +305,7 @@ function App() {
       );
 
       setPreview(result);
+
       if (!result.valid) {
         setAdminError(
           (result.errors || []).join("\n") ||
@@ -284,16 +322,22 @@ function App() {
   // ==========================================================
   // Explicit database initialization/import
   // ==========================================================
+
   const handleInitialize = async () => {
     if (!doctorFile || !preview?.valid) {
-      setAdminError("Choose a file and complete a successful preview first.");
+      setAdminError(
+        "Choose a file and complete a successful preview first."
+      );
       return;
     }
 
     const confirmed = window.confirm(
       "Import these doctor records? Existing matching doctors may be updated. Records omitted from the file will not be deleted."
     );
-    if (!confirmed) return;
+
+    if (!confirmed) {
+      return;
+    }
 
     setAdminLoading(true);
     setAdminError("");
@@ -313,7 +357,10 @@ function App() {
       setDoctorFile(null);
 
       const fileInput = document.getElementById("doctor-json-file");
-      if (fileInput) fileInput.value = "";
+
+      if (fileInput) {
+        fileInput.value = "";
+      }
 
       await loadDoctorDirectory();
     } catch (error) {
@@ -323,6 +370,10 @@ function App() {
     }
   };
 
+  // ==========================================================
+  // Render application
+  // ==========================================================
+
   return (
     <div className="app">
       <header className="header">
@@ -330,6 +381,7 @@ function App() {
           <div className="brand-icon">
             <Activity size={22} />
           </div>
+
           <div>
             <h1>CareFlow AI</h1>
             <p>Agentic Healthcare Scheduling</p>
@@ -341,6 +393,7 @@ function App() {
             <span />
             Agent Online
           </div>
+
           {activeView === "chat" && (
             <button
               type="button"
@@ -357,15 +410,20 @@ function App() {
       <nav className="view-tabs" aria-label="Application views">
         <button
           type="button"
-          className={`view-tab ${activeView === "chat" ? "active" : ""}`}
+          className={`view-tab ${
+            activeView === "chat" ? "active" : ""
+          }`}
           onClick={() => setActiveView("chat")}
         >
           <Bot size={17} />
           Scheduling Assistant
         </button>
+
         <button
           type="button"
-          className={`view-tab ${activeView === "admin" ? "active" : ""}`}
+          className={`view-tab ${
+            activeView === "admin" ? "active" : ""
+          }`}
           onClick={() => setActiveView("admin")}
         >
           <Database size={17} />
@@ -398,7 +456,10 @@ function App() {
                       <UserRound size={17} />
                     )}
                   </div>
-                  <div className="message-content">{message.content}</div>
+
+                  <div className="message-content">
+                    {message.content}
+                  </div>
                 </div>
               ))}
 
@@ -407,11 +468,14 @@ function App() {
                   <div className="message-icon">
                     <Bot size={17} />
                   </div>
+
                   <div className="message-content loading-message">
                     <span className="loading-dot" />
                     <span className="loading-dot" />
                     <span className="loading-dot" />
-                    <span className="loading-text">Processing...</span>
+                    <span className="loading-text">
+                      Processing...
+                    </span>
                   </div>
                 </div>
               )}
@@ -426,6 +490,7 @@ function App() {
                 disabled={loading}
                 autoComplete="off"
               />
+
               <button
                 type="submit"
                 disabled={loading || !input.trim()}
@@ -437,7 +502,10 @@ function App() {
           </section>
 
           <aside className="sidebar">
-            <AppointmentCard appointment={appointment} status={status} />
+            <AppointmentCard
+              appointment={appointment}
+              status={status}
+            />
           </aside>
         </main>
       ) : (
@@ -447,10 +515,11 @@ function App() {
               <p className="eyebrow">ADMINISTRATION</p>
               <h2>Doctor Management</h2>
               <p>
-                Upload a JSON file, review its records, and explicitly import
-                the validated doctors into the database.
+                Upload a JSON file, review its records, and explicitly
+                import the validated doctors into the database.
               </p>
             </div>
+
             <button
               type="button"
               className="secondary-button"
@@ -468,15 +537,23 @@ function App() {
               label="Total doctors"
               value={summary?.total_doctors ?? "—"}
             />
+
             <SummaryCard
               icon={<Stethoscope size={21} />}
               label="Specialties"
               value={summary?.total_specialties ?? "—"}
             />
+
             <SummaryCard
               icon={<ShieldCheck size={21} />}
               label="File validation"
-              value={preview ? (preview.valid ? "Passed" : "Failed") : "Pending"}
+              value={
+                preview
+                  ? preview.valid
+                    ? "Passed"
+                    : "Failed"
+                  : "Pending"
+              }
             />
           </section>
 
@@ -485,22 +562,33 @@ function App() {
               <div className="admin-card-icon">
                 <FileJson size={21} />
               </div>
+
               <div>
                 <h3>Import doctors from JSON</h3>
-                <p>JSON array · Maximum 2 MB · Preview before importing</p>
+                <p>
+                  JSON array · Maximum 2 MB · Preview before importing
+                </p>
               </div>
             </div>
 
-            <label className="file-drop" htmlFor="doctor-json-file">
+            <label
+              className="file-drop"
+              htmlFor="doctor-json-file"
+            >
               <Upload size={26} />
+
               <strong>
-                {doctorFile ? doctorFile.name : "Choose your doctors.json file"}
+                {doctorFile
+                  ? doctorFile.name
+                  : "Choose your doctors.json file"}
               </strong>
+
               <span>
                 {doctorFile
                   ? `${(doctorFile.size / 1024).toFixed(1)} KB`
                   : "Choose a JSON file from your computer"}
               </span>
+
               <input
                 id="doctor-json-file"
                 type="file"
@@ -516,13 +604,18 @@ function App() {
                 onClick={handlePreview}
                 disabled={!doctorFile || adminLoading}
               >
-                {adminLoading ? "Please wait..." : "Validate and preview"}
+                {adminLoading
+                  ? "Please wait..."
+                  : "Validate and preview"}
               </button>
+
               <button
                 type="button"
                 className="initialize-button"
                 onClick={handleInitialize}
-                disabled={!doctorFile || !preview?.valid || adminLoading}
+                disabled={
+                  !doctorFile || !preview?.valid || adminLoading
+                }
               >
                 <Database size={17} />
                 Initialize database
@@ -530,38 +623,63 @@ function App() {
             </div>
 
             <p className="helper-text">
-              Preview does not change the database. Import can insert new
-              doctors and update existing matching records. Omitted doctors
-              are not automatically deleted.
+              Preview does not change the database. Import can insert
+              new doctors and update existing matching records.
+              Omitted doctors are not automatically deleted.
             </p>
 
             {adminError && (
-              <div className="feedback error-feedback" role="alert">
+              <div
+                className="feedback error-feedback"
+                role="alert"
+              >
                 <strong>Action required</strong>
                 <pre>{adminError}</pre>
               </div>
             )}
 
             {preview?.valid && (
-              <div className="feedback success-feedback" role="status">
+              <div
+                className="feedback success-feedback"
+                role="status"
+              >
                 <CheckCircle2 size={19} />
+
                 <div>
                   <strong>Validation successful</strong>
-                  <p>{preview.count} doctor records are ready to import.</p>
+
+                  <p>
+                    {preview.total_doctors ??
+                      preview.doctors?.length ??
+                      0}{" "}
+                    doctor records are ready to import.
+                    {preview.preview_truncated
+                      ? " Only the first 100 records are shown below."
+                      : ""}
+                  </p>
                 </div>
               </div>
             )}
 
             {importResult && (
-              <div className="feedback success-feedback" role="status">
+              <div
+                className="feedback success-feedback"
+                role="status"
+              >
                 <CheckCircle2 size={19} />
+
                 <div>
                   <strong>Import completed</strong>
-                  <p>{importResult.message}</p>
+
                   <p>
-                    Inserted: {importResult.inserted} · Updated:{" "}
-                    {importResult.updated} · Processed:{" "}
-                    {importResult.total_processed}
+                    Successfully processed{" "}
+                    {importResult.total_processed ?? 0} doctor records.
+                  </p>
+
+                  <p>
+                    Inserted: {importResult.inserted ?? 0} · Updated:{" "}
+                    {importResult.updated ?? 0} · Total in database:{" "}
+                    {importResult.total_doctors ?? "—"}
                   </p>
                 </div>
               </div>
@@ -580,6 +698,7 @@ function App() {
               <div className="admin-card-icon">
                 <Stethoscope size={21} />
               </div>
+
               <div>
                 <h3>Doctor directory</h3>
                 <p>Records currently stored in the database</p>
@@ -587,9 +706,14 @@ function App() {
             </div>
 
             {directoryLoading ? (
-              <p className="empty-directory">Loading doctor directory...</p>
+              <p className="empty-directory">
+                Loading doctor directory...
+              </p>
             ) : directoryError ? (
-              <div className="feedback error-feedback" role="alert">
+              <div
+                className="feedback error-feedback"
+                role="alert"
+              >
                 <strong>Could not load the directory</strong>
                 <pre>{directoryError}</pre>
               </div>
@@ -599,7 +723,9 @@ function App() {
               <div className="empty-directory">
                 <Stethoscope size={28} />
                 <strong>No doctors found</strong>
-                <p>Import a validated JSON file to populate the directory.</p>
+                <p>
+                  Import a validated JSON file to populate the directory.
+                </p>
               </div>
             )}
           </section>
@@ -609,10 +735,15 @@ function App() {
   );
 }
 
+// ============================================================
+// Summary card
+// ============================================================
+
 function SummaryCard({ icon, label, value }) {
   return (
     <div className="summary-card">
       <div className="summary-icon">{icon}</div>
+
       <div>
         <span>{label}</span>
         <strong>{value}</strong>
@@ -620,6 +751,10 @@ function SummaryCard({ icon, label, value }) {
     </div>
   );
 }
+
+// ============================================================
+// Doctor directory / preview table
+// ============================================================
 
 function DoctorTable({ doctors }) {
   return (
@@ -633,6 +768,7 @@ function DoctorTable({ doctors }) {
             <th>Description</th>
           </tr>
         </thead>
+
         <tbody>
           {doctors.map((doctor, index) => (
             <tr key={`${doctor.name}-${index}`}>
@@ -641,12 +777,17 @@ function DoctorTable({ doctors }) {
                   <div className="doctor-avatar">
                     <UserRound size={17} />
                   </div>
+
                   <strong>{doctor.name}</strong>
                 </div>
               </td>
+
               <td>
-                <span className="specialty-pill">{doctor.specialty}</span>
+                <span className="specialty-pill">
+                  {doctor.specialty}
+                </span>
               </td>
+
               <td>{doctor.experience} years</td>
               <td>{doctor.description || "—"}</td>
             </tr>
@@ -657,7 +798,10 @@ function DoctorTable({ doctors }) {
   );
 }
 
-// Existing appointment card, with the specialty field preserved.
+// ============================================================
+// Appointment summary card
+// ============================================================
+
 function AppointmentCard({ appointment, status }) {
   const confirmed =
     status === "confirmed" || status === "booking_completed";
@@ -680,9 +824,14 @@ function AppointmentCard({ appointment, status }) {
         <div className="card-title-icon">
           <CalendarDays size={18} />
         </div>
+
         <div>
           <h3>Appointment</h3>
-          <p>{confirmed ? "Your appointment details" : "Booking details"}</p>
+          <p>
+            {confirmed
+              ? "Your appointment details"
+              : "Booking details"}
+          </p>
         </div>
       </div>
 
@@ -690,8 +839,8 @@ function AppointmentCard({ appointment, status }) {
         <div className="appointment-empty">
           <CalendarDays size={28} />
           <p>
-            Your doctor, date, time, and patient details will appear here as
-            you continue.
+            Your doctor, date, time, and patient details will appear
+            here as you continue.
           </p>
         </div>
       )}
@@ -717,11 +866,13 @@ function AppointmentCard({ appointment, status }) {
             label="Date"
             value={appointment.date || "Not selected"}
           />
+
           <InfoRow
             icon={<Clock size={17} />}
             label="Time"
             value={appointment.time || "Not selected"}
           />
+
           <InfoRow
             icon={<UserRound size={17} />}
             label="Patient"
@@ -740,10 +891,15 @@ function AppointmentCard({ appointment, status }) {
   );
 }
 
+// ============================================================
+// Appointment information row
+// ============================================================
+
 function InfoRow({ icon, label, value }) {
   return (
     <div className="info-row">
       <div className="info-icon">{icon}</div>
+
       <div className="info-content">
         <span>{label}</span>
         <strong>{value}</strong>
@@ -752,12 +908,22 @@ function InfoRow({ icon, label, value }) {
   );
 }
 
-// Keep the trace parser from the attached App.jsx.
-// The trace is used internally for appointment summary and is not displayed.
+// ============================================================
+// Parse agent trace details
+// ============================================================
+
 function parseTraceDetails(details) {
-  if (!details) return null;
-  if (typeof details === "object") return details;
-  if (typeof details !== "string") return null;
+  if (!details) {
+    return null;
+  }
+
+  if (typeof details === "object") {
+    return details;
+  }
+
+  if (typeof details !== "string") {
+    return null;
+  }
 
   try {
     return JSON.parse(details);
