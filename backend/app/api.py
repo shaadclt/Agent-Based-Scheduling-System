@@ -2,8 +2,15 @@
 
 from contextlib import asynccontextmanager
 from typing import Any
+import base64
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import time
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -15,6 +22,72 @@ from backend.app.doctor_import import (
     list_doctors,
     validate_doctors_json,
 )
+
+
+# ============================================================
+# Admin authentication (stdlib-only signed bearer tokens)
+# ============================================================
+
+ADMIN_TOKEN_TTL_SECONDS = 60 * 60 * 8
+
+
+class AdminLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=128)
+    password: str = Field(..., min_length=1, max_length=1024)
+
+
+def _admin_secret() -> str:
+    secret = os.getenv("ADMIN_SECRET_KEY", "")
+    if len(secret) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin authentication is not configured securely. Set ADMIN_SECRET_KEY to a random value of at least 32 characters.",
+        )
+    return secret
+
+
+def _encode_token(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    encoded = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    signature = hmac.new(
+        _admin_secret().encode(), encoded.encode(), hashlib.sha256
+    ).digest()
+    signature_encoded = base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
+    return f"{encoded}.{signature_encoded}"
+
+
+def _decode_token(token: str) -> dict[str, Any]:
+    try:
+        encoded, signature = token.split(".", 1)
+        expected = hmac.new(
+            _admin_secret().encode(), encoded.encode(), hashlib.sha256
+        ).digest()
+        supplied = base64.urlsafe_b64decode(
+            signature + "=" * (-len(signature) % 4)
+        )
+        if not hmac.compare_digest(expected, supplied):
+            raise ValueError("Invalid signature")
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        payload = json.loads(raw)
+        if payload.get("role") != "admin" or int(payload.get("exp", 0)) < int(time.time()):
+            raise ValueError("Expired token")
+        return payload
+    except Exception as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Admin session is invalid or expired. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
+async def require_admin(authorization: str | None = Header(default=None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Admin login is required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return _decode_token(authorization[7:].strip())
 
 
 # ============================================================
@@ -240,6 +313,38 @@ async def debug_conversation(thread_id: str):
 
 
 # ============================================================
+# Admin Login
+# ============================================================
+
+@app.post("/api/v1/admin/login")
+async def admin_login(request: AdminLoginRequest):
+    username = os.getenv("ADMIN_USERNAME", "")
+    password = os.getenv("ADMIN_PASSWORD", "")
+    if not username or not password:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin credentials are not configured. Set ADMIN_USERNAME and ADMIN_PASSWORD in the backend environment.",
+        )
+    username_ok = secrets.compare_digest(request.username, username)
+    password_ok = secrets.compare_digest(request.password, password)
+    if not (username_ok and password_ok):
+        # Keep the response generic to avoid revealing which field was incorrect.
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    now = int(time.time())
+    token = _encode_token(
+        {"sub": username, "role": "admin", "iat": now,
+         "exp": now + ADMIN_TOKEN_TTL_SECONDS}
+    )
+    return {"access_token": token, "token_type": "bearer",
+            "expires_in": ADMIN_TOKEN_TTL_SECONDS}
+
+
+@app.get("/api/v1/admin/session")
+async def admin_session(admin=Depends(require_admin)):
+    return {"authenticated": True, "username": admin.get("sub", "admin")}
+
+
+# ============================================================
 # Admin: Doctor JSON Validation
 # ============================================================
 
@@ -289,7 +394,7 @@ async def _read_and_validate_doctor_file(
 # ============================================================
 
 @app.post("/api/v1/admin/doctors/preview")
-async def preview_doctors(file: UploadFile = File(...)):
+async def preview_doctors(file: UploadFile = File(...), admin=Depends(require_admin)):
     result = await _read_and_validate_doctor_file(file)
     doctors = result["doctors"]
 
@@ -313,7 +418,7 @@ async def preview_doctors(file: UploadFile = File(...)):
 # ============================================================
 
 @app.post("/api/v1/admin/doctors/initialize")
-async def initialize_doctors(file: UploadFile = File(...)):
+async def initialize_doctors(file: UploadFile = File(...), admin=Depends(require_admin)):
     result = await _read_and_validate_doctor_file(file)
 
     try:
@@ -348,7 +453,7 @@ async def initialize_doctors(file: UploadFile = File(...)):
 # ============================================================
 
 @app.get("/api/v1/admin/doctors")
-async def get_doctors():
+async def get_doctors(admin=Depends(require_admin)):
     doctors = list_doctors()
 
     return {
@@ -362,7 +467,7 @@ async def get_doctors():
 # ============================================================
 
 @app.get("/api/v1/admin/doctors/summary")
-async def get_doctor_summary():
+async def get_doctor_summary(admin=Depends(require_admin)):
     doctors = list_doctors()
 
     specialties = {
