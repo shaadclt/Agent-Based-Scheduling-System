@@ -14,6 +14,7 @@ import {
   Send,
   ShieldCheck,
   Stethoscope,
+  Trash2,
   Upload,
   UserRound,
   Users,
@@ -419,6 +420,55 @@ function App() {
   };
 
   // ==========================================================
+  // Reset the complete doctor directory
+  // ==========================================================
+
+  const handleResetDoctorDirectory = async () => {
+    const confirmed = window.confirm(
+      "RESET THE DOCTOR DIRECTORY? This permanently deletes all doctors, their availability slots, and all appointments. Patient records will be retained. This cannot be undone. Continue only if you have a backup or intend to re-import the directory."
+    );
+    if (!confirmed) return;
+
+    const secondConfirmation = window.prompt(
+      'Type RESET to confirm deletion of the doctor directory and appointments.'
+    );
+    if (secondConfirmation !== "RESET") {
+      setAdminError("Reset cancelled. You must type RESET exactly to confirm.");
+      return;
+    }
+
+    setAdminLoading(true);
+    setAdminError("");
+    setDirectoryError("");
+    setImportResult(null);
+    setPreview(null);
+
+    try {
+      const result = await adminRequestJson(
+        "/api/v1/admin/doctors/reset",
+        { method: "POST" }
+      );
+      setDoctorFile(null);
+      const fileInput = document.getElementById("doctor-json-file");
+      if (fileInput) fileInput.value = "";
+      setImportResult({
+        reset: true,
+        message: result.message,
+        total_processed: 0,
+        inserted: 0,
+        updated: 0,
+        total_doctors: 0,
+        ...result,
+      });
+      await loadDoctorDirectory();
+    } catch (error) {
+      setAdminError(error.message || "Could not reset the doctor directory.");
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  // ==========================================================
   // Render application
   // ==========================================================
 
@@ -611,6 +661,16 @@ function App() {
                 <RefreshCw size={16} />
                 Refresh directory
               </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={handleResetDoctorDirectory}
+                disabled={adminLoading || directoryLoading}
+                title="Permanently delete doctors, availability, and appointments"
+              >
+                <Trash2 size={16} />
+                Reset directory
+              </button>
               <button type="button" className="secondary-button" onClick={handleAdminLogout}>
                 Sign out
               </button>
@@ -755,12 +815,17 @@ function App() {
                 <CheckCircle2 size={19} />
 
                 <div>
-                  <strong>Import completed</strong>
+                  <strong>{importResult.reset ? "Directory reset completed" : "Import completed"}</strong>
 
-                  <p>
-                    Successfully processed{" "}
-                    {importResult.total_processed ?? 0} doctor records.
-                  </p>
+                  {importResult.reset ? (
+                    <p>
+                      Deleted {importResult.doctors_deleted ?? 0} doctors, {importResult.availability_slots_deleted ?? 0} availability slots, and {importResult.appointments_deleted ?? 0} appointments. Patient records were retained.
+                    </p>
+                  ) : (
+                    <p>
+                      Successfully processed {importResult.total_processed ?? 0} doctor records.
+                    </p>
+                  )}
 
                   <p>
                     Inserted: {importResult.inserted ?? 0} · Updated:{" "}
