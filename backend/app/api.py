@@ -14,7 +14,8 @@ from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from backend.app.database import init_db
+from backend.app.database import SessionLocal, init_db
+from backend.app.models import Appointment, Doctor, DoctorAvailability
 from backend.app.graph import build_graph
 from backend.app.doctor_import import (
     MAX_UPLOAD_BYTES,
@@ -480,3 +481,41 @@ async def get_doctor_summary(admin=Depends(require_admin)):
         "total_doctors": len(doctors),
         "total_specialties": len(specialties),
     }
+
+# ============================================================
+# Admin: Reset Doctor Directory
+# ============================================================
+
+@app.post("/api/v1/admin/doctors/reset")
+async def reset_doctor_directory(admin=Depends(require_admin)):
+    """Delete all doctors, their availability, and linked appointments.
+
+    This destructive operation is restricted to authenticated admins.
+    Patient records are retained.
+    """
+    db = SessionLocal()
+    try:
+        appointments_deleted = db.query(Appointment).delete(
+            synchronize_session=False
+        )
+        availability_deleted = db.query(DoctorAvailability).delete(
+            synchronize_session=False
+        )
+        doctors_deleted = db.query(Doctor).delete(
+            synchronize_session=False
+        )
+        db.commit()
+        return {
+            "message": "Doctor directory reset successfully.",
+            "doctors_deleted": doctors_deleted,
+            "availability_slots_deleted": availability_deleted,
+            "appointments_deleted": appointments_deleted,
+        }
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Could not reset the doctor directory. No changes were committed.",
+        ) from exc
+    finally:
+        db.close()
