@@ -1,0 +1,54 @@
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+
+    container_name: careflow-backend
+
+    env_file:
+      - .env
+
+    environment:
+      DATABASE_URL: sqlite:////app/data/careflow.db
+
+    volumes:
+      - careflow_data:/app/data
+
+    expose:
+      - "8000"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+
+    container_name: careflow-frontend
+
+    ports:
+      - "8080:80"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+volumes:
+  careflow_data:
