@@ -80,6 +80,11 @@ function toFileFormData(file) {
 
 function App() {
   const [activeView, setActiveView] = useState("chat");
+  const [adminToken, setAdminToken] = useState("");
+  const [adminUsername, setAdminUsername] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState("");
 
   // Existing scheduling assistant state.
   const [threadId, setThreadId] = useState(() => createThreadId());
@@ -99,6 +104,49 @@ function App() {
   const [doctors, setDoctors] = useState([]);
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [directoryError, setDirectoryError] = useState("");
+
+  const adminRequestJson = (path, options = {}) => {
+    const headers = new Headers(options.headers || {});
+    if (adminToken) headers.set("Authorization", `Bearer ${adminToken}`);
+    return requestJson(path, { ...options, headers });
+  };
+
+  const handleAdminLogin = async (event) => {
+    event.preventDefault();
+    setLoginLoading(true);
+    setLoginError("");
+    try {
+      const result = await requestJson("/api/v1/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: adminUsername.trim(),
+          password: adminPassword,
+        }),
+      });
+      setAdminToken(result.access_token);
+      setAdminPassword("");
+      setActiveView("admin");
+    } catch (error) {
+      setLoginError(error.message || "Unable to sign in.");
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleAdminLogout = () => {
+    setAdminToken("");
+    setAdminPassword("");
+    setAdminUsername("");
+    setPreview(null);
+    setDoctorFile(null);
+    setImportResult(null);
+    setDoctors([]);
+    setSummary(null);
+    setAdminError("");
+    setDirectoryError("");
+    setActiveView("chat");
+  };
 
   // ==========================================================
   // Start a new conversation
@@ -226,8 +274,8 @@ function App() {
 
     try {
       const [summaryData, directoryData] = await Promise.all([
-        requestJson("/api/v1/admin/doctors/summary"),
-        requestJson("/api/v1/admin/doctors"),
+        adminRequestJson("/api/v1/admin/doctors/summary"),
+        adminRequestJson("/api/v1/admin/doctors"),
       ]);
 
       setSummary(summaryData);
@@ -246,10 +294,10 @@ function App() {
   };
 
   useEffect(() => {
-    if (activeView === "admin") {
+    if (activeView === "admin" && adminToken) {
       loadDoctorDirectory();
     }
-  }, [activeView]);
+  }, [activeView, adminToken]);
 
   // ==========================================================
   // Handle doctor JSON file selection
@@ -296,7 +344,7 @@ function App() {
     setImportResult(null);
 
     try {
-      const result = await requestJson(
+      const result = await adminRequestJson(
         "/api/v1/admin/doctors/preview",
         {
           method: "POST",
@@ -344,7 +392,7 @@ function App() {
     setImportResult(null);
 
     try {
-      const result = await requestJson(
+      const result = await adminRequestJson(
         "/api/v1/admin/doctors/initialize",
         {
           method: "POST",
@@ -427,7 +475,7 @@ function App() {
           onClick={() => setActiveView("admin")}
         >
           <Database size={17} />
-          Doctor Management
+          {adminToken ? "Doctor Management" : "Admin Login"}
         </button>
       </nav>
 
@@ -508,6 +556,39 @@ function App() {
             />
           </aside>
         </main>
+      ) : !adminToken ? (
+        <main className="admin-login-page">
+          <form className="admin-login-card" onSubmit={handleAdminLogin}>
+            <div className="admin-login-icon"><ShieldCheck size={28} /></div>
+            <p className="eyebrow">RESTRICTED ACCESS</p>
+            <h2>Administrator login</h2>
+            <p className="admin-login-description">
+              Sign in with your authorized administrator credentials to manage the doctor directory.
+            </p>
+            <label htmlFor="admin-username">Username</label>
+            <input
+              id="admin-username"
+              type="text"
+              autoComplete="username"
+              value={adminUsername}
+              onChange={(event) => setAdminUsername(event.target.value)}
+              required
+            />
+            <label htmlFor="admin-password">Password</label>
+            <input
+              id="admin-password"
+              type="password"
+              autoComplete="current-password"
+              value={adminPassword}
+              onChange={(event) => setAdminPassword(event.target.value)}
+              required
+            />
+            {loginError && <div className="feedback error-feedback" role="alert">{loginError}</div>}
+            <button className="primary-button admin-login-submit" type="submit" disabled={loginLoading}>
+              {loginLoading ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+        </main>
       ) : (
         <main className="admin-page">
           <div className="admin-heading">
@@ -520,15 +601,20 @@ function App() {
               </p>
             </div>
 
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={loadDoctorDirectory}
-              disabled={directoryLoading}
-            >
-              <RefreshCw size={16} />
-              Refresh directory
-            </button>
+            <div className="admin-heading-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={loadDoctorDirectory}
+                disabled={directoryLoading}
+              >
+                <RefreshCw size={16} />
+                Refresh directory
+              </button>
+              <button type="button" className="secondary-button" onClick={handleAdminLogout}>
+                Sign out
+              </button>
+            </div>
           </div>
 
           <section className="summary-grid">
