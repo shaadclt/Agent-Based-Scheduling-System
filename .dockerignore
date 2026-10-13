@@ -1,29 +1,30 @@
-# Secrets
+
 .env
 .env.*
 !.env.example
 
-# Python
 __pycache__/
 *.py[cod]
 *.pyo
+
 .venv/
 venv/
+env/
+
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 
-# Frontend dependencies and generated files
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# Git and editor files
 .git/
 .gitignore
 .vscode/
 .idea/
 
-# Local databases and backups
 *.db
 *.sqlite
 *.sqlite3
@@ -31,5 +32,5 @@ frontend/.vite/
 *.db-wal
 *.bak
 
-# OS files
 .DS_Store
+Thumbs.db
