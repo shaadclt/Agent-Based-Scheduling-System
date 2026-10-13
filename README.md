@@ -1,4 +1,4 @@
-# CareFlow AI --- Agent-Based Healthcare Scheduling System
+# CareFlow AI - Agent-Based Healthcare Scheduling System
 
 CareFlow AI is an agent-based healthcare appointment scheduling
 application. It combines a React/Vite frontend with a FastAPI backend
