@@ -7,24 +7,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies commonly needed by Python packages.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies first to improve build caching.
 COPY requirements.txt ./requirements.txt
+
 RUN python -m pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# Copy the backend package.
 COPY backend/ ./backend/
 
-# Run as a non-root user.
 RUN useradd --create-home --uid 10001 appuser \
-    && mkdir -p /app/data \
+    && mkdir -p /app/backend/data \
     && chown -R appuser:appuser /app
 
 USER appuser
