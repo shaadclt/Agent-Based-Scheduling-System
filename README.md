@@ -1,344 +1,492 @@
-# Agent-Based Scheduling System for Healthcare Operations 🏥
+# CareFlow AI --- Agent-Based Healthcare Scheduling System
 
-An agent-based scheduling system that uses LlamaIndex workflows and the ReAct pattern to automate doctor discovery and appointment coordination through structured reasoning and tool execution.
+CareFlow AI is an agent-based healthcare appointment scheduling
+application. It combines a React/Vite frontend with a FastAPI backend
+and a LangGraph workflow to guide users through appointment scheduling,
+collect missing details across turns, and return structured responses.
+
+> **Deployment note:** Replace URL placeholders with the actual URLs
+> assigned by Render. Report test results only from the latest test run.
+
+## Contents
+
+-   [Overview](#overview)
+-   [Features](#features)
+-   [Technology Stack](#technology-stack)
+-   [Architecture](#architecture)
+-   [Project Structure](#project-structure)
+-   [Prerequisites](#prerequisites)
+-   [Configuration](#configuration)
+-   [Run Locally](#run-locally)
+-   [Run with Docker Compose](#run-with-docker-compose)
+-   [API Overview](#api-overview)
+-   [Doctor Directory Management](#doctor-directory-management)
+-   [Deploy to Render](#deploy-to-render)
+-   [Testing](#testing)
+-   [Troubleshooting](#troubleshooting)
+-   [Security and Data Notes](#security-and-data-notes)
 
 ## Overview
 
-This project implements a conversational AI agent that helps patients:
-- Search for doctors by disease/specialty
-- View doctor information (experience, contact details)
-- Schedule appointments with selected doctors
-- Maintain conversation context across multiple interactions
+CareFlow AI uses a conversational workflow to collect appointment
+details progressively. The scheduling agent maintains a conversation
+thread, identifies the current scheduling step, asks for missing
+information, and uses doctor and availability data to guide the flow.
 
-**Tech Stack:** LlamaIndex, Groq (LLaMA-3.3-70B), HuggingFace Embeddings, Python, Async Workflows
+The backend exposes HTTP endpoints for the frontend and initializes the
+database when the application starts.
 
-## Why This Project
-
-Manual scheduling in healthcare and service-based industries is time-consuming, error-prone, and difficult to scale. This project demonstrates how agent-based systems can automate scheduling workflows with controlled tool execution and observability by combining semantic search, reasoning, and tool execution in a controlled pipeline.
+CareFlow AI is a portfolio and development project. It should not be
+treated as a production clinical system without appropriate security,
+privacy, reliability, and operational reviews.
 
 ## Features
 
-- **Semantic Search**: Uses vector embeddings to search doctors by specialty or disease
-- **Automated Scheduling**: Books appointments with selected doctors
-- **ReAct Agent Pattern**: Employs reasoning and action steps for intelligent decision-making
-- **Memory Management**: Maintains conversation history for contextual responses
-- **Tool Integration**: Combines multiple tools (search + scheduling) seamlessly
+### Conversational appointment scheduling
+
+-   Chat-style scheduling requests.
+-   Multi-turn conversations using a `thread_id`.
+-   Progressive collection of missing appointment details, such as
+    doctor or specialty, date, and time.
+-   Structured responses containing the conversation ID, response text,
+    status, and execution trace.
+-   Conversation-state retrieval.
+
+### Agent workflow
+
+-   LangGraph orchestration.
+-   LangChain tools for scheduling operations.
+-   Workflow state managed through a checkpointing mechanism.
+-   Separation between API handling, graph execution, and database
+    operations.
+
+### Doctor directory and administration
+
+-   Doctor directory backed by the database.
+-   JSON file validation and preview before import.
+-   Import of validated doctor records.
+-   Administrative functionality in the frontend for managing the
+    directory.
+
+### Application operations
+
+-   FastAPI backend and health endpoint.
+-   React/Vite frontend.
+-   SQLite database for local development.
+-   Docker Compose for running frontend and backend together.
+-   CORS configuration for the frontend origin.
+
+## Technology Stack
+
+  Layer                  Technologies
+  ---------------------- --------------------------------------------
+  Frontend               React, Vite, JavaScript, CSS
+  Backend API            Python, FastAPI, Uvicorn, Pydantic
+  Agent orchestration    LangGraph, LangChain
+  Language model         Groq API, if configured in the application
+  Database               SQLite, SQLAlchemy
+  Workflow persistence   LangGraph SQLite checkpoint integration
+  File import            JSON upload and validation
+  Local deployment       Docker, Docker Compose
+  Cloud deployment       Render
+  Tests                  pytest
 
 ## Architecture
 
-The system uses LlamaIndex workflows with three main events:
-1. **PrepEvent**: Prepares the request for processing
-2. **InputEvent**: Formats input for the LLM
-3. **ToolCallEvent**: Triggers appropriate tool calls
-
+``` text
+User
+  |
+  v
+React + Vite frontend
+  |
+  | HTTPS / JSON
+  v
+FastAPI backend
+  |
+  +--> Doctor directory and database operations
+  |
+  +--> LangGraph scheduling workflow
+          |
+          +--> Collect missing appointment details
+          +--> Check doctor / specialty and availability
+          +--> Maintain conversation state
+          +--> Return response and workflow trace
+  |
+  v
+SQLite database and LangGraph checkpoint storage
 ```
-User Input → PrepEvent → InputEvent → LLM Processing → ToolCallEvent → Response
-                ↑                                              ↓
-                └──────────────────────────────────────────────┘
-```
 
-In addition to the core workflow, the system includes structured agent traces and evaluation hooks. Each agent run logs intent detection, tool selection, execution outcomes, and termination reasons, enabling observability and debuggability without exposing chain-of-thought.
-
-## Agent Traces and Observability
-
-The agent emits structured traces for each execution, including:
-- Detected intent
-- Selected tool (if any)
-- Tool execution outcome
-- Stop reason and latency
-
-These traces improve transparency, debugging, and evaluation, and are returned as part of the API response.
-
-## Evaluation Metrics
-
-Since this is an agentic system, evaluation focuses on decision quality and behavior rather than text similarity alone.
-
-Tracked metrics include:
-- **Intent Accuracy**: Correct identification of user intent
-- **Tool Selection Accuracy**: Correct choice of tools for a given intent
-- **Task Completion Rate**: Successful end-to-end task execution
-- **Invalid Action Rate**: Attempts to perform unsupported actions
-- **Latency**: End-to-end response time
-
-These metrics are collected via lightweight evaluation hooks during agent execution.
-
+The exact workflow and transitions are defined by the code in
+`backend/app/graph.py` and related modules.
 
 ## Project Structure
 
-The project is organized as a modular, production-style codebase, with a notebook
-retained for demonstration purposes.
+High-level guide to the main directories; keep this section aligned with
+the repository if files are renamed or moved.
 
-```text
-agent_scheduling_system/
-│
-├── app/
-│   ├── api.py          # FastAPI service exposing the agent
-│   ├── agent.py        # Agent assembly and wiring
-│   ├── workflow.py     # Event-driven agent workflow (core logic)
-│   ├── tools.py        # LLM-callable tools (search, scheduling)
-│   ├── memory.py       # Conversation memory management
-│   ├── traces.py       # Structured agent tracing and observability
-│   ├── evaluation.py   # Agent evaluation metrics
-│   └── config.py       # LLM and embedding configuration
-│
-├── data/
-│   └── doctors.json    # Sample doctor database
-│
-├── notebooks/
-│   └── scheduling_demo.ipynb  # Interactive demo and exploration
-│
-├── Dockerfile
-├── requirements.txt
-├── LICENSE.txt
-├── README.md
-├── .dockerignore
-└── .env.example
+``` text
+Agent-Based-Scheduling-System-Healthcare-Operations/
+├── backend/
+│   ├── app/
+│   │   ├── api.py
+│   │   ├── database.py
+│   │   ├── graph.py
+│   │   ├── checkpointer.py
+│   │   ├── doctor_import.py
+│   │   └── ...
+│   ├── tests/
+│   ├── requirements.txt
+│   └── Dockerfile
+├── frontend/
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   └── ...
+├── docker-compose.yml
+├── .env.example
+├── .gitignore
+└── README.md
 ```
-
-### Agent Workflow
-
-The scheduling agent follows an event-driven workflow using LlamaIndex
-workflows and the ReAct (Reasoning + Acting) pattern.
-
-- User input enters through a StartEvent and is normalized in a PrepEvent
-- Conversation history is reconstructed to maintain multi-turn context
-- The LLM reasons over the structured input and decides whether to:
-  - respond directly, or
-  - invoke scheduling/search tools
-- Tool results are fed back into the workflow, enabling iterative reasoning
-- The process terminates deterministically via a StopEvent
-
-This design ensures controlled tool usage, clear reasoning boundaries,
-and safe agent execution.
-
-<img width="1849" height="866" alt="Scheduling agent workflow" src="https://github.com/user-attachments/assets/0cdc2308-5c07-4a79-9d9f-a48ba9920ff9" />
 
 ## Prerequisites
 
-- Python 3.8+
-- Jupyter Notebook (for demo)
-- Docker (optional, for deployment)
-- Groq API Key
-
-## Installation
-
-```bash
-# Install required packages
-pip install llama-index
-pip install llama-index-llms-groq
-pip install llama-index-embeddings-huggingface
-pip install llama-index-readers-json
-pip install llama-index-utils-workflow
-```
-
-## Setup
-
-1. **API Key Configuration**
-   - Obtain a Groq API key from [Groq Console](https://console.groq.com)
-   - In Google Colab, store it as a secret named `GROQ_API_KEY`
-
-2. **Prepare Data Files**
-   - `doctors.json`: JSON file containing doctor information
-     ```json
-     [
-       {
-         "name": "Dr. John Smith",
-         "specialty": "Cardiology",
-         "experience": "15 years",
-         "email": "john.smith@hospital.com"
-       }
-     ]
-     ```
-
-3. **Upload Required Files**
-   - Upload `doctors.json` to your Colab environment
-   - The system will create `Doctor appointment requests.csv` automatically
-
-## Usage
-
-### Basic Examples
-
-```python
-# Search for doctors by specialty
-response = await scheduling_agent.run(
-    input="Which doctors are cardiologists?"
-)
-print(response.get("response"))
-
-# Schedule an appointment
-response = await scheduling_agent.run(
-    input="Please setup an appointment with John Smith for Ben Jones next week in the afternoons"
-)
-print(response.get("response"))
-
-# Combined search and scheduling
-response = await scheduling_agent.run(
-    input="Find a neurologist and request an appointment for Beth Wilson at the earliest"
-)
-print(response.get("response"))
-```
-
-
-## How It Works
-
-### 1. Document Processing
-- Loads doctor database from JSON
-- Splits documents into chunks using `SentenceSplitter`
-- Creates vector embeddings using HuggingFace's `BAAI/bge-small-en-v1.5`
-- Indexes documents for semantic search
-
-### 2. Tool Definition
-- **Doctor Query Tool**: Searches for doctors by specialty/disease
-- **Appointment Tool**: Schedules appointments with selected doctors
-
-### 3. ReAct Agent Workflow
-- Receives user input
-- Reasons about which tools to use
-- Executes tool calls
-- Synthesizes final response
-- Maintains conversation memory
-
-### Scheduling Decision Logic
-
-The agent:
-1. Identifies intent (search vs scheduling)
-2. Resolves specialty constraints
-3. Extracts patient and timing preferences
-4. Selects learned tools via ReAct reasoning
-5. Confirms or gracefully fails if constraints cannot be met
+-   Python 3.11 or a version supported by the backend dependencies.
+-   Node.js and npm compatible with the frontend.
+-   Git.
+-   Docker Desktop for Docker Compose.
+-   A Groq API key if the configured workflow calls Groq models.
 
 ## Configuration
 
-### LLM Settings
-```python
-llm = Groq(
-    model="llama-3.3-70b-versatile",
-    api_key=userdata.get('GROQ_API_KEY')
-)
+Create a local `.env` file using `.env.example` as a reference. Never
+commit `.env` or real credentials.
+
+Common settings may include:
+
+``` env
+GROQ_API_KEY=replace_with_your_groq_api_key
+FRONTEND_URL=http://localhost:5173
 ```
 
-### Embedding Model
-```python
-Settings.embed_model = HuggingFaceEmbedding(
-    model_name="BAAI/bge-small-en-v1.5"
-)
+-   `GROQ_API_KEY`: API credential if required by the configured Groq
+    integration.
+-   `FRONTEND_URL`: exact origin allowed by the backend CORS middleware.
+    Locally this is typically `http://localhost:5173`; on Render, use
+    the deployed frontend URL including `https://`, without a trailing
+    slash.
+
+Verify variable names against the current source and `.env.example`; do
+not add variables the application does not read. Do not put secrets in
+frontend variables prefixed with `VITE_`, because these values are
+exposed to browser code.
+
+## Run Locally
+
+### 1. Clone the repository
+
+``` bash
+git clone <YOUR_GITHUB_REPOSITORY_URL>
+cd Agent-Based-Scheduling-System-Healthcare-Operations
 ```
 
-### Chunk Size
-```python
-splitter = SentenceSplitter(chunk_size=200)
+Replace the placeholder with the actual repository URL.
+
+### 2. Install and run the backend
+
+From the repository root, create and activate a virtual environment.
+
+**Windows PowerShell**
+
+``` powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r backend/requirements.txt
 ```
 
-## Output Files
+If the Dockerfile uses a different requirements file, install from the
+same file referenced by `backend/Dockerfile`.
 
-- **Doctor appointment requests.csv**: Contains all scheduled appointments with fields:
-  - Requested Date
-  - Patient Name
-  - Doctor Name
-  - Scheduling Comments
+Start the backend from the repository root:
 
-The CSV file represents a persistent side effect of agent actions and serves as a lightweight stand-in for a database or external scheduling system.
-
-### Example Flow
-
-User: "Find a neurologist and schedule an appointment next week"
-
-Agent reasoning:
-- Identifies specialty = Neurology
-- Uses semantic search to retrieve matching doctors
-- Selects scheduling tool
-- Writes appointment request to CSV
-- Responds with confirmation summary
-
-## API Usage
-
-The agent is exposed via a FastAPI service.
-
-### Run Locally
-
-```bash
-uvicorn app.api:app --reload
+``` powershell
+python -m uvicorn backend.app.api:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### Example Request
-```http
-POST /run
+-   Backend: `http://127.0.0.1:8000`
+-   Health check: `http://127.0.0.1:8000/health`
+-   Interactive API documentation: `http://127.0.0.1:8000/docs`
+
+### 3. Install and run the frontend
+
+Open a second terminal:
+
+``` powershell
+cd frontend
+npm install
+```
+
+For local Vite development, configure the API URL if your frontend reads
+it from an environment variable:
+
+``` env
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+Then start the frontend:
+
+``` powershell
+npm run dev
+```
+
+Open the URL printed by Vite, typically `http://localhost:5173`. Ensure
+the frontend API URL and backend CORS origin match your local setup.
+
+## Run with Docker Compose
+
+Make sure Docker Desktop is running. From the repository root:
+
+``` powershell
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+View logs:
+
+``` powershell
+docker compose logs --tail=100 backend
+docker compose logs --tail=100 frontend
+```
+
+Stop the services:
+
+``` powershell
+docker compose down
+```
+
+Do not use `docker compose down -v` unless you intentionally want to
+remove named volumes. Check the actual host ports in
+`docker-compose.yml` to find the frontend URL. The backend is normally
+exposed on port `8000` if that port is published in Compose.
+
+## API Overview
+
+The API is implemented in `backend/app/api.py`. Use the running Swagger
+documentation at `/docs` as the source of truth for routes and schemas.
+
+  -------------------------------------------------------------------------------------
+  Method                  Endpoint                              Purpose
+  ----------------------- ------------------------------------- -----------------------
+  `GET`                   `/`                                   Service status
+                                                                information
+
+  `GET`                   `/health`                             Health check
+
+  `POST`                  `/api/v1/schedule`                    Submit a scheduling
+                                                                message
+
+  `GET`                   `/api/v1/conversations/{thread_id}`   Retrieve conversation
+                                                                state
+
+  `GET`                   Doctor directory endpoint(s)          Retrieve doctor records
+
+  `POST`                  Doctor preview/import endpoint(s)     Validate and import a
+                                                                JSON doctor file
+  -------------------------------------------------------------------------------------
+
+### Example scheduling request
+
+``` json
 {
-  "query": "Find a neurologist and schedule an appointment"
+  "query": "I would like to book an appointment",
+  "thread_id": "demo-session-001"
 }
 ```
 
-### Example Response
-```json
-{
-  "output": "Appointment request recorded for ...",
-  "traces": [
-    { "step": "INTENT_DETECTED", "detail": "SCHEDULE_APPOINTMENT" },
-    { "step": "TOOL_SELECTED", "detail": "schedule_appointment_tool" }
-  ]
-}
+Use the exact request schema displayed at `/docs` for the running
+version. Continue a multi-turn conversation with the same `thread_id`.
+
+## Doctor Directory Management
+
+The admin workflow allows a JSON doctor file to be uploaded, validated,
+previewed, and imported into the database.
+
+1.  Prepare a JSON file that follows the schema expected by the
+    application.
+2.  Use the preview/validation step to inspect records and validation
+    errors.
+3.  Import only after reviewing the preview.
+4.  Confirm the imported records appear in the doctor directory.
+
+The accepted JSON schema and required fields are defined in
+`backend/app/doctor_import.py`. Refer to that module rather than
+assuming a schema.
+
+## Deploy to Render
+
+The recommended setup uses two Render services: a backend Docker Web
+Service and a frontend Static Site.
+
+### Backend: Docker Web Service
+
+1.  Push the project to GitHub.
+2.  In the [Render Dashboard](https://dashboard.render.com/), create a
+    **New Web Service** and connect the repository.
+3.  Select **Docker** as the runtime.
+4.  Set the Dockerfile path to `backend/Dockerfile` if that matches the
+    repository's current configuration.
+5.  Set the health check path to `/health`.
+6.  Add the backend environment variables required by the application,
+    including the Groq API key and `FRONTEND_URL`.
+7.  Deploy and copy the public backend URL assigned by Render.
+
+### Frontend: Static Site
+
+1.  Create a **New Static Site** from the same repository.
+2.  Set the root directory to `frontend`.
+3.  Build command: `npm install && npm run build`
+4.  Publish directory: `dist`
+5.  Add `VITE_API_URL` with the actual public backend URL, such as
+    `https://<your-backend-service>.onrender.com`.
+6.  Deploy and copy the public frontend URL.
+
+The example URLs are placeholders; use the URLs Render actually assigns.
+
+### Configure CORS
+
+Set `FRONTEND_URL` in the backend service's Render environment to the
+exact frontend origin, for example:
+
+``` text
+https://<your-frontend-service>.onrender.com
 ```
 
-## Running with Docker
+Do not include a trailing slash. The backend CORS middleware should
+allow this origin and the required local development origins. Avoid
+using `*` as the production origin, particularly when credentials are
+enabled. Redeploy or restart the backend after changing environment
+variables.
 
-The API can be run as a containerized service.
+### Persistent database storage
 
-```bash
-docker build -t scheduling-agent-api .
-docker run -p 8000:8000 --env-file .env scheduling-agent-api
+SQLite writes to a local file. Render's ordinary filesystem is
+ephemeral, so database files can be lost on restart or redeployment
+unless persistent storage is configured.
+
+Before relying on deployed records: - Configure persistent storage
+mounted at the directory where the application writes the SQLite
+database, after checking the path in `backend/app/database.py`; or -
+Migrate to a managed database and update the database configuration.
+
+If LangGraph checkpoint data is stored separately, make sure that path
+is persistent too when conversation state must survive restarts. A local
+Docker Compose volume does not automatically transfer to Render.
+
+### Post-deployment checklist
+
+-   [ ] Backend deployment completes successfully.
+-   [ ] `https://<your-backend-service>.onrender.com/health` returns a
+    healthy response.
+-   [ ] Frontend loads over HTTPS.
+-   [ ] `VITE_API_URL` points to the actual backend URL.
+-   [ ] `FRONTEND_URL` matches the frontend origin exactly.
+-   [ ] Doctor directory loads.
+-   [ ] Multi-turn scheduling works using the same `thread_id`.
+-   [ ] Admin access and doctor JSON preview/import work.
+-   [ ] Database and checkpoint data persist after a restart/redeploy.
+-   [ ] No secrets are committed to GitHub or exposed in frontend
+    variables.
+
+## Testing
+
+Run the backend tests from the repository root:
+
+``` powershell
+python -m pytest backend/tests -v
 ```
 
-## Error Handling
+Report results from the latest test run. Application startup or a
+healthy Docker status does not, by itself, mean all tests pass.
 
-The agent includes robust error handling:
-- Tool parsing errors
-- Non-existent tool calls
-- Tool execution failures
-- LLM response parsing issues
+Recommended manual checks: - Health endpoint. - Doctor lookup by name
+and specialty. - Availability lookup. - Multi-turn conversation with a
+stable `thread_id`. - Date/time follow-up and booking completion. -
+Admin login and logout. - Invalid JSON preview and valid JSON import. -
+Persistence after container restart.
 
-## Limitations
+## Troubleshooting
 
-- Requires internet connection for LLM API calls
-- JSON database must be properly formatted
-- Appointment scheduling writes to CSV (no calendar integration)
-- No real-time availability checking
+### Backend container is unhealthy
 
-## Future Enhancements
+``` powershell
+docker compose logs --tail=150 backend
+```
 
-- [ ] Integration with calendar APIs
-- [ ] Real-time doctor availability checking
-- [ ] Email notifications to doctors and patients
-- [ ] Multi-language support
-- [ ] Web interface for non-technical users
-- [ ] Database backend instead of CSV
+Fix the first startup traceback. If a dependency is missing, add the
+package to the requirements file used by the Docker build, then rebuild
+the backend image.
 
-## Dependencies
+### `python-multipart` is missing
 
-- `llama-index`: Core framework
-- `llama-index-llms-groq`: Groq LLM integration
-- `llama-index-embeddings-huggingface`: Embedding models
-- `llama-index-readers-json`: JSON document reader
-- `llama-index-utils-workflow`: Workflow visualization
-- `nest-asyncio`: Async support in notebooks
+Add `python-multipart` to the backend requirements file used by Docker
+and rebuild the image.
 
-## Contributing
+### `langgraph.checkpoint.sqlite` cannot be imported
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Ensure `langgraph-checkpoint-sqlite` is installed in the backend image
+and compatible with the installed LangGraph dependencies.
+
+### Browser reports a CORS error
+
+-   Check `FRONTEND_URL` on the backend service.
+-   Match the exact frontend origin, including `https://`.
+-   Check that `VITE_API_URL` points to the correct backend.
+-   Redeploy after environment changes.
+
+### Frontend cannot reach the backend
+
+Confirm the backend is live, the API URL is correct, and the frontend
+uses the expected API paths. Inspect the browser console and Render
+backend logs.
+
+### Data disappears after redeployment
+
+Confirm that SQLite and checkpoint files use persistent storage, or
+migrate to a persistent managed database. Local Docker volumes are not
+automatically available on Render.
+
+## Security and Data Notes
+
+-   Never commit `.env` files, API keys, passwords, or private
+    administrator credentials.
+-   Do not put secrets in frontend variables prefixed with `VITE_`.
+-   Restrict CORS to the intended frontend origin in production.
+-   Protect administrative endpoints with appropriate authentication and
+    authorization.
+-   Validate uploaded JSON files and keep upload limits enabled.
+-   Use synthetic/demo patient information during development and
+    demonstrations.
+-   Do not use this project for clinical decisions or real patient data
+    without appropriate privacy, security, compliance, and reliability
+    controls.
+
+## Roadmap
+
+Potential future improvements: - More comprehensive end-to-end tests. -
+Stronger authentication, role-based authorization, and audit logging. -
+Persistent managed database support. - Appointment conflict prevention
+and concurrency handling. - Structured logging and observability. -
+CI/CD and deployment checks. - Accessibility and responsive UI
+improvements.
 
 ## License
 
-MIT License - feel free to use this project for your own purposes.
+Add a license before redistributing the project or accepting external
+contributions. Until a license is included, all rights remain with the
+copyright holder.
 
-## Acknowledgments
+## Author
 
-- Built with [LlamaIndex](https://www.llamaindex.ai/)
-- Powered by [Groq](https://groq.com/)
-- Embeddings from [HuggingFace](https://huggingface.co/)
+**Mohamed Shaad**
 
-## Contact
-
-For questions or issues, please open an issue in the GitHub repository.
-
----
-
-**Note**: This is a demonstration project. For production use, implement proper security, authentication, and data validation.
+CareFlow AI --- Agent-Based Scheduling System for Healthcare Operations.
