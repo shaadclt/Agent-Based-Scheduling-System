@@ -5,8 +5,6 @@ application. It combines a React/Vite frontend with a FastAPI backend
 and a LangGraph workflow to guide users through appointment scheduling,
 collect missing details across turns, and return structured responses.
 
-> **Deployment note:** Replace URL placeholders with the actual URLs
-> assigned by Render. Report test results only from the latest test run.
 
 ## Contents
 
